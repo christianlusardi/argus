@@ -1,0 +1,159 @@
+import Foundation
+
+struct DailyActivity: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let messageCount: Int
+    let sessionCount: Int
+    let toolCallCount: Int
+
+    var dateValue: Date {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: date) ?? Date()
+    }
+}
+
+struct ModelTokenStats: Codable {
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadInputTokens: Int
+    let cacheCreationInputTokens: Int
+    let webSearchRequests: Int?
+    let costUSD: Double?
+
+    var totalTokens: Int { inputTokens + outputTokens }
+    var totalWithCache: Int { totalTokens + cacheReadInputTokens + cacheCreationInputTokens }
+}
+
+struct DailyModelTokens: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let tokensByModel: [String: Int]
+
+    var dateValue: Date {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: date) ?? Date()
+    }
+
+    var totalTokens: Int { tokensByModel.values.reduce(0, +) }
+}
+
+struct LongestSessionInfo: Codable {
+    let sessionId: String?
+    let duration: Int?
+    let messageCount: Int?
+    let timestamp: String?
+}
+
+struct ProjectStats: Codable, Identifiable {
+    var id: String { project }
+    let project: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadInputTokens: Int
+    let cacheCreationInputTokens: Int
+    let webSearchRequests: Int
+    let sessionCount: Int
+    let messageCount: Int
+    let estimatedCostUSD: Double
+}
+
+struct DailyWorkHours: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let firstHour: Int
+    let lastHour: Int
+}
+
+struct DailyModelBreakdown: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let modelTokens: [String: ModelTokenStats]
+}
+
+struct DailyProjectCosts: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let costs:       [String: Double]
+    let outputs:     [String: Int]
+    let messages:    [String: Int]
+    let webSearches: [String: Int]
+}
+
+struct DailyTokenTotals: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheCreateTokens: Int
+    let webSearchCount: Int
+    let estimatedCostUSD: Double
+    let cacheSavingsUSD: Double
+}
+
+struct StatsCache: Codable {
+    let version: Int?
+    let lastComputedDate: String?
+    let dailyActivity: [DailyActivity]?
+    let dailyModelTokens: [DailyModelTokens]?
+    let modelUsage: [String: ModelTokenStats]?
+    let totalSessions: Int?
+    let totalMessages: Int?
+    let longestSession: LongestSessionInfo?
+    let firstSessionDate: String?
+    let hourCounts: [String: Int]?
+    let totalSpeculationTimeSavedMs: Int?
+    // New fields
+    let dailyCosts: [String: Double]?
+    let projectStats: [ProjectStats]?
+    let dailyWorkHours: [DailyWorkHours]?
+    let subagentSessionCount: Int?
+    let directSessionCount: Int?
+    let avgOutputTokensPerSession: Int?
+    let dailyTotals: [DailyTokenTotals]?
+    let dailyModelBreakdown: [DailyModelBreakdown]?
+    let dailyHourCounts: [String: [String: Int]]?
+    let dailyProjectCosts: [DailyProjectCosts]?
+}
+
+struct ModelPricingTable {
+    struct Price {
+        let inputPerMTok: Double
+        let outputPerMTok: Double
+        let cacheReadPerMTok: Double
+        let cacheWritePerMTok: Double
+
+        func cost(for stats: ModelTokenStats) -> Double {
+            Double(stats.inputTokens)                * inputPerMTok    / 1_000_000
+            + Double(stats.outputTokens)             * outputPerMTok   / 1_000_000
+            + Double(stats.cacheReadInputTokens)     * cacheReadPerMTok  / 1_000_000
+            + Double(stats.cacheCreationInputTokens) * cacheWritePerMTok / 1_000_000
+        }
+
+        func cost(input: Int, output: Int, cr: Int, cc: Int) -> Double {
+            Double(input)  * inputPerMTok    / 1_000_000
+            + Double(output) * outputPerMTok   / 1_000_000
+            + Double(cr)   * cacheReadPerMTok  / 1_000_000
+            + Double(cc)   * cacheWritePerMTok / 1_000_000
+        }
+    }
+
+    static let table: [String: Price] = [
+        "claude-opus-4-7":            Price(inputPerMTok: 15.0, outputPerMTok: 75.0, cacheReadPerMTok: 1.50,  cacheWritePerMTok: 18.75),
+        "claude-opus-4-6":            Price(inputPerMTok: 15.0, outputPerMTok: 75.0, cacheReadPerMTok: 1.50,  cacheWritePerMTok: 18.75),
+        "claude-sonnet-4-6":          Price(inputPerMTok: 3.0,  outputPerMTok: 15.0, cacheReadPerMTok: 0.30,  cacheWritePerMTok: 3.75),
+        "claude-sonnet-4-5-20250929": Price(inputPerMTok: 3.0,  outputPerMTok: 15.0, cacheReadPerMTok: 0.30,  cacheWritePerMTok: 3.75),
+        "claude-haiku-4-5-20251001":  Price(inputPerMTok: 0.80, outputPerMTok: 4.0,  cacheReadPerMTok: 0.08,  cacheWritePerMTok: 1.0),
+    ]
+
+    static func price(for model: String) -> Price {
+        if let p = table[model] { return p }
+        for (key, p) in table {
+            if model.hasPrefix(key.components(separatedBy: "-").prefix(3).joined(separator: "-")) { return p }
+        }
+        return Price(inputPerMTok: 3.0, outputPerMTok: 15.0, cacheReadPerMTok: 0.30, cacheWritePerMTok: 3.75)
+    }
+}

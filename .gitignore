@@ -1,0 +1,6 @@
+*.app/
+*.zip
+.build/
+.DS_Store
+*.o
+*.swp

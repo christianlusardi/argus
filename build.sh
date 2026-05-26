@@ -1,0 +1,81 @@
+#!/bin/bash
+set -e
+
+APP="ArgusAI.app"
+BUNDLE="$APP/Contents/MacOS"
+SDK=$(xcrun --sdk macosx --show-sdk-path)
+
+echo "Building ArgusAI..."
+mkdir -p "$BUNDLE"
+
+# Create Info.plist
+mkdir -p "$APP/Contents"
+cat > "$APP/Contents/Info.plist" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>ArgusAI</string>
+    <key>CFBundleDisplayName</key>
+    <string>ArgusAI</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.argusai</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>ArgusAI</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+EOF
+
+SOURCES=(
+    Sources/ClaudeMetrics/Theme.swift
+    Sources/ClaudeMetrics/Models.swift
+    Sources/ClaudeMetrics/MetricsStore.swift
+    Sources/ClaudeMetrics/Components.swift
+    Sources/ClaudeMetrics/ContentView.swift
+    Sources/ClaudeMetrics/OverviewView.swift
+    Sources/ClaudeMetrics/ModelsView.swift
+    Sources/ClaudeMetrics/ActivityView.swift
+    Sources/ClaudeMetrics/ScheduleView.swift
+    Sources/ClaudeMetrics/ProjectsView.swift
+    Sources/ClaudeMetrics/ClaudeMetricsApp.swift
+)
+
+swiftc \
+    "${SOURCES[@]}" \
+    -module-name ArgusAI \
+    -parse-as-library \
+    -swift-version 5 \
+    -target arm64-apple-macosx14.0 \
+    -sdk "$SDK" \
+    -framework SwiftUI \
+    -framework Charts \
+    -framework AppKit \
+    -framework Foundation \
+    -framework Combine \
+    -Onone \
+    -o "$BUNDLE/ArgusAI"
+
+codesign --force --deep --sign - "$APP"
+
+echo "Build succeeded! Run with:"
+echo "  open $APP"
+echo "Or: open $(pwd)/$APP"
+
