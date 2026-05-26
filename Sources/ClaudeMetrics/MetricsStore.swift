@@ -1,5 +1,7 @@
 import Foundation
 import Combine
+import UserNotifications
+import AppKit
 
 enum DateFilter: String, CaseIterable {
     case today      = "Today"
@@ -14,6 +16,9 @@ class MetricsStore: ObservableObject {
     @Published var error: String?
     @Published var lastRefresh: Date?
     @Published var dateFilter: DateFilter = .all
+    @Published var alertThreshold: Double = UserDefaults.standard.double(forKey: "argusai.alertThreshold") {
+        didSet { UserDefaults.standard.set(alertThreshold, forKey: "argusai.alertThreshold") }
+    }
 
     private let projectsURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".claude/projects")
@@ -30,6 +35,7 @@ class MetricsStore: ObservableObject {
     }()
 
     init() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         loadData()
         scheduleAutoRefresh()
     }
@@ -73,6 +79,7 @@ class MetricsStore: ObservableObject {
                     self.lastParseDate = startTime
                     self.parsing = false
                     self.initialLoadDone = true
+                    self.checkAlerts()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -713,4 +720,206 @@ class MetricsStore: ObservableObject {
     var avgOutputTokensPerSession: Int { stats?.avgOutputTokensPerSession ?? 0 }
     var subagentSessionCount:      Int { stats?.subagentSessionCount ?? 0 }
     var directSessionCount:        Int { stats?.directSessionCount  ?? 0 }
+
+    // MARK: - Sessions
+
+    var filteredSessions: [SessionSummary] {
+        let all = stats?.sessions ?? []
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        switch dateFilter {
+        case .all: return all
+        case .today:
+            let start = Calendar.current.startOfDay(for: Date())
+            return all.filter { (fmt.date(from: $0.firstDay) ?? .distantPast) >= start }
+        case .sevenDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            return all.filter { (fmt.date(from: $0.firstDay) ?? .distantPast) >= cut }
+        case .thirtyDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+            return all.filter { (fmt.date(from: $0.firstDay) ?? .distantPast) >= cut }
+        }
+    }
+
+    // MARK: - Menu bar
+
+    var menuBarLabel: String {
+        let todayStart = Calendar.current.startOfDay(for: Date())
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let todayCost = (stats?.dailyTotals ?? [])
+            .filter { (fmt.date(from: $0.date) ?? .distantPast) >= todayStart }
+            .reduce(0.0) { $0 + $1.estimatedCostUSD }
+        if todayCost == 0 && stats == nil { return "$-.--" }
+        return formatCost(todayCost)
+    }
+
+    // MARK: - Burn rate / forecast
+
+    var burnRatePerDay: Double {
+        let last7 = (stats?.dailyTotals ?? []).suffix(7)
+        guard !last7.isEmpty else { return 0 }
+        return last7.reduce(0.0) { $0 + $1.estimatedCostUSD } / Double(last7.count)
+    }
+
+    var currentMonthCost: Double {
+        let cal = Calendar.current
+        let now = Date()
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        return (stats?.dailyTotals ?? []).filter { day in
+            guard let d = fmt.date(from: day.date) else { return false }
+            return cal.isDate(d, equalTo: now, toGranularity: .month)
+        }.reduce(0.0) { $0 + $1.estimatedCostUSD }
+    }
+
+    var daysLeftInMonth: Int {
+        let cal = Calendar.current
+        let now = Date()
+        let range = cal.range(of: .day, in: .month, for: now)!
+        let today = cal.component(.day, from: now)
+        return range.count - today
+    }
+
+    var projectedMonthCost: Double {
+        currentMonthCost + burnRatePerDay * Double(daysLeftInMonth)
+    }
+
+    // MARK: - Week-over-week comparison
+
+    private var previousPeriodDailyTotals: [DailyTokenTotals] {
+        let all = stats?.dailyTotals ?? []
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let now = Date()
+        switch dateFilter {
+        case .all: return []
+        case .today:
+            let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
+            let yStart = Calendar.current.startOfDay(for: yesterday)
+            let yEnd   = Calendar.current.startOfDay(for: now)
+            return all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= yStart && d < yEnd
+            }
+        case .sevenDays:
+            let w2start = Calendar.current.date(byAdding: .day, value: -14, to: now)!
+            let w2end   = Calendar.current.date(byAdding: .day, value: -7,  to: now)!
+            return all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= w2start && d < w2end
+            }
+        case .thirtyDays:
+            let m2start = Calendar.current.date(byAdding: .day, value: -60, to: now)!
+            let m2end   = Calendar.current.date(byAdding: .day, value: -30, to: now)!
+            return all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= m2start && d < m2end
+            }
+        }
+    }
+
+    var previousPeriodCost: Double { previousPeriodDailyTotals.reduce(0) { $0 + $1.estimatedCostUSD } }
+
+    var costDeltaPct: Double? {
+        let prev = previousPeriodCost
+        guard prev > 0 else { return nil }
+        return (filteredTotalCost - prev) / prev
+    }
+
+    var previousPeriodMessages: Int {
+        // Use filteredActivity pattern shifted by period
+        let all = stats?.dailyActivity ?? []
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let now = Date()
+        let filtered: [DailyActivity]
+        switch dateFilter {
+        case .all: return 0
+        case .today:
+            let yStart = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: -1, to: now)!)
+            let yEnd   = Calendar.current.startOfDay(for: now)
+            filtered = all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= yStart && d < yEnd
+            }
+        case .sevenDays:
+            let w2start = Calendar.current.date(byAdding: .day, value: -14, to: now)!
+            let w2end   = Calendar.current.date(byAdding: .day, value: -7,  to: now)!
+            filtered = all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= w2start && d < w2end
+            }
+        case .thirtyDays:
+            let m2start = Calendar.current.date(byAdding: .day, value: -60, to: now)!
+            let m2end   = Calendar.current.date(byAdding: .day, value: -30, to: now)!
+            filtered = all.filter {
+                let d = fmt.date(from: $0.date) ?? .distantPast
+                return d >= m2start && d < m2end
+            }
+        }
+        return filtered.reduce(0) { $0 + $1.messageCount }
+    }
+
+    var messagesDeltaPct: Double? {
+        let prev = Double(previousPeriodMessages)
+        guard prev > 0 else { return nil }
+        return (Double(filteredTotalMessages) - prev) / prev
+    }
+
+    // MARK: - Subagent analytics
+
+    var filteredSubagentCost: Double {
+        filteredSessions.filter { $0.isSubagent }.reduce(0) { $0 + $1.costUSD }
+    }
+
+    var filteredDirectCost: Double {
+        filteredSessions.filter { !$0.isSubagent }.reduce(0) { $0 + $1.costUSD }
+    }
+
+    // MARK: - Alerts
+
+    private func checkAlerts() {
+        let threshold = alertThreshold
+        guard threshold > 0 else { return }
+        let todayCost = filteredTotalCostToday
+        guard todayCost >= threshold else { return }
+
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let todayStr = fmt.string(from: Date())
+        let lastAlertDay = UserDefaults.standard.string(forKey: "argusai.lastAlertDay") ?? ""
+        guard lastAlertDay != todayStr else { return }
+
+        UserDefaults.standard.set(todayStr, forKey: "argusai.lastAlertDay")
+        let content = UNMutableNotificationContent()
+        content.title = "ArgusAI Daily Limit Reached"
+        content.body = String(format: "Today's cost %@ has reached your limit of %@",
+                              formatCost(todayCost), formatCost(threshold))
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: "argusai.dailylimit.\(todayStr)",
+                                        content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    private var filteredTotalCostToday: Double {
+        let start = Calendar.current.startOfDay(for: Date())
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        return (stats?.dailyTotals ?? [])
+            .filter { (fmt.date(from: $0.date) ?? .distantPast) >= start }
+            .reduce(0.0) { $0 + $1.estimatedCostUSD }
+    }
+
+    // MARK: - Export CSV
+
+    @MainActor func exportCSV() {
+        var csv = "session_id,project,date,messages,output_tokens,cost_usd,is_subagent,model\n"
+        for s in (stats?.sessions ?? []) {
+            let line = "\"\(s.sessionId)\",\"\(s.project)\",\(s.firstDay),\(s.messageCount),\(s.outputTokens),\(s.costUSD),\(s.isSubagent ? 1 : 0),\"\(s.topModel)\"\n"
+            csv += line
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "argusai-\(dateFmt.string(from: Date())).csv"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? csv.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
 }

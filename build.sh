@@ -56,6 +56,7 @@ SOURCES=(
     Sources/ClaudeMetrics/ActivityView.swift
     Sources/ClaudeMetrics/ScheduleView.swift
     Sources/ClaudeMetrics/ProjectsView.swift
+    Sources/ClaudeMetrics/SessionsView.swift
     Sources/ClaudeMetrics/ClaudeMetricsApp.swift
 )
 

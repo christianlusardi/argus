@@ -276,6 +276,8 @@ final class ArgusDB {
         let dailyProjectCosts   = try queryDailyProjectCosts()
         let (totSess, totMsg, longestSess, firstDate, avgOut) = try querySessionAggregates()
         let (subCnt, dirCnt)    = try queryAgentCounts()
+        let sessions            = try querySessions()
+        let (subCost, dirCost)  = try queryAgentTypeCosts()
 
         let dailyCosts = Dictionary(uniqueKeysWithValues: dailyTotals.map { ($0.date, $0.estimatedCostUSD) })
 
@@ -300,7 +302,10 @@ final class ArgusDB {
             dailyTotals: dailyTotals.isEmpty ? nil : dailyTotals,
             dailyModelBreakdown: dailyModelBreakdown.isEmpty ? nil : dailyModelBreakdown,
             dailyHourCounts: dailyHourCounts.isEmpty ? nil : dailyHourCounts,
-            dailyProjectCosts: dailyProjectCosts.isEmpty ? nil : dailyProjectCosts
+            dailyProjectCosts: dailyProjectCosts.isEmpty ? nil : dailyProjectCosts,
+            sessions: sessions.isEmpty ? nil : sessions,
+            subagentCostUSD: subCost,
+            directCostUSD: dirCost
         )
     }
 
@@ -526,5 +531,43 @@ final class ArgusDB {
         }
         sqlite3_finalize(s)
         return (sub, direct)
+    }
+
+    func querySessions() throws -> [SessionSummary] {
+        let stmt = try prepare("""
+            SELECT m.session_id, m.project, MIN(m.day), COUNT(*),
+                SUM(m.output_tokens), SUM(m.cost_usd), MAX(m.is_subagent),
+                (SELECT model FROM messages WHERE session_id = m.session_id
+                 GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1)
+            FROM messages m WHERE m.day != ''
+            GROUP BY m.session_id ORDER BY SUM(m.cost_usd) DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [SessionSummary] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(SessionSummary(
+                sessionId: colTxt(stmt, 0),
+                project: colTxt(stmt, 1),
+                firstDay: colTxt(stmt, 2),
+                messageCount: colInt(stmt, 3),
+                outputTokens: colInt(stmt, 4),
+                costUSD: colDbl(stmt, 5),
+                isSubagent: colInt(stmt, 6) == 1,
+                topModel: colTxt(stmt, 7)
+            ))
+        }
+        return result
+    }
+
+    func queryAgentTypeCosts() throws -> (Double?, Double?) {
+        var subCost: Double? = nil
+        var dirCost: Double? = nil
+        let s = try prepare("SELECT is_subagent, SUM(cost_usd) FROM messages GROUP BY is_subagent")
+        defer { sqlite3_finalize(s) }
+        while sqlite3_step(s) == SQLITE_ROW {
+            let cost = colDbl(s, 1)
+            if colInt(s, 0) == 1 { subCost = cost } else { dirCost = cost }
+        }
+        return (subCost, dirCost)
     }
 }

@@ -22,6 +22,7 @@ enum NavSection: String, CaseIterable, Identifiable {
     case activity = "Activity"
     case schedule = "Schedule"
     case projects = "Projects"
+    case sessions = "Sessions"
 
     var id: String { rawValue }
 
@@ -32,6 +33,7 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .activity: return "calendar.day.timeline.left"
         case .schedule: return "clock.fill"
         case .projects: return "folder.badge.gear"
+        case .sessions: return "bubble.left.and.bubble.right"
         }
     }
 }
@@ -62,6 +64,7 @@ struct ContentView: View {
                         case .activity: ActivityView()
                         case .schedule: ScheduleView()
                         case .projects: ProjectsView()
+                        case .sessions: SessionsView()
                         }
                     }
                 }
@@ -115,6 +118,22 @@ struct SidebarView: View {
             .padding(.horizontal, 8)
 
             Spacer()
+
+            // Daily limit
+            VStack(alignment: .leading, spacing: 6) {
+                Color.appBorder.frame(height: 1)
+                Text("DAILY LIMIT")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.appTextTertiary)
+                    .tracking(0.5)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                TextField("$0.00", value: $store.alertThreshold, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
 
             // Date filter
             VStack(alignment: .leading, spacing: 6) {

@@ -83,6 +83,21 @@ struct SectionCard<Content: View>: View {
     }
 }
 
+struct DeltaBadge: View {
+    let pct: Double  // 0.15 = +15%
+
+    var body: some View {
+        let isPositive = pct >= 0
+        let arrow = isPositive ? "↑" : "↓"
+        let color = isPositive
+            ? Color(red: 0.9, green: 0.3, blue: 0.3)
+            : Color(red: 0.3, green: 0.9, blue: 0.4)
+        Text("\(arrow)\(String(format: "%.0f", abs(pct * 100)))%")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+    }
+}
+
 struct TokenStat: View {
     let label: String
     let value: String

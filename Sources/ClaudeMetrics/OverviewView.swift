@@ -14,13 +14,18 @@ struct OverviewView: View {
 
                 // KPI row 1
                 HStack(spacing: 14) {
-                    MetricCard(
-                        icon: "bubble.left.and.bubble.right.fill",
-                        iconColor: .appAccent,
-                        label: "Total Messages",
-                        value: "\(store.filteredTotalMessages)",
-                        detail: "\(store.filteredTotalSessions) sessions"
-                    )
+                    VStack(spacing: 4) {
+                        MetricCard(
+                            icon: "bubble.left.and.bubble.right.fill",
+                            iconColor: .appAccent,
+                            label: "Total Messages",
+                            value: "\(store.filteredTotalMessages)",
+                            detail: "\(store.filteredTotalSessions) sessions"
+                        )
+                        if let pct = store.messagesDeltaPct {
+                            DeltaBadge(pct: pct)
+                        }
+                    }
                     MetricCard(
                         icon: "arrow.up.right.circle.fill",
                         iconColor: .modelSonnet,
@@ -35,13 +40,18 @@ struct OverviewView: View {
                         value: formatTokens(store.filteredCacheTokens),
                         detail: "reads + writes"
                     )
-                    MetricCard(
-                        icon: "dollarsign.circle.fill",
-                        iconColor: .appGold,
-                        label: "Est. Cost",
-                        value: formatCost(store.filteredTotalCost),
-                        detail: "public pricing"
-                    )
+                    VStack(spacing: 4) {
+                        MetricCard(
+                            icon: "dollarsign.circle.fill",
+                            iconColor: .appGold,
+                            label: "Est. Cost",
+                            value: formatCost(store.filteredTotalCost),
+                            detail: "public pricing"
+                        )
+                        if let pct = store.costDeltaPct {
+                            DeltaBadge(pct: pct)
+                        }
+                    }
                 }
 
                 // KPI row 2
@@ -97,6 +107,85 @@ struct OverviewView: View {
                     SectionCard(title: "Daily Cost", icon: "dollarsign.circle") {
                         OverviewDailyCostChart()
                             .frame(height: 160)
+                    }
+                }
+
+                // Forecast
+                SectionCard(title: "Forecast", icon: "chart.line.uptrend.xyaxis") {
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text("Burn rate")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.appTextSecondary)
+                            Spacer()
+                            Text(String(format: "%@ / day", formatCost(store.burnRatePerDay)))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                        }
+                        HStack {
+                            Text("Spent this month")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.appTextSecondary)
+                            Spacer()
+                            Text(formatCost(store.currentMonthCost))
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                        }
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Projected month")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.appTextSecondary)
+                                Text("(\(store.daysLeftInMonth) days left)")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.appTextTertiary)
+                            }
+                            Spacer()
+                            Text("~\(formatCost(store.projectedMonthCost))")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Color.appGold)
+                        }
+                    }
+                }
+
+                // Agent type
+                let subCost  = store.filteredSubagentCost
+                let dirCost  = store.filteredDirectCost
+                let totalAgentCost = subCost + dirCost
+                if totalAgentCost > 0 {
+                    SectionCard(title: "Agent Type", icon: "person.2.fill") {
+                        VStack(spacing: 10) {
+                            HStack {
+                                Text("Direct")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.appTextSecondary)
+                                Spacer()
+                                Text("\(store.filteredSessions.filter { !$0.isSubagent }.count) sessions · \(formatCost(dirCost))")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.appTextPrimary)
+                            }
+                            HStack {
+                                Text("Subagent")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.appTextSecondary)
+                                Spacer()
+                                Text("\(store.filteredSessions.filter { $0.isSubagent }.count) sessions · \(formatCost(subCost))")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.appTextPrimary)
+                            }
+                            // Two-segment bar
+                            GeometryReader { geo in
+                                HStack(spacing: 2) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.appAccent)
+                                        .frame(width: max(4, geo.size.width * CGFloat(dirCost / totalAgentCost)))
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.appTextSecondary)
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .frame(height: 8)
+                        }
                     }
                 }
             }

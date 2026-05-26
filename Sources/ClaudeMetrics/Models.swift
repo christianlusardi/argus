@@ -94,6 +94,18 @@ struct DailyTokenTotals: Codable, Identifiable {
     let cacheSavingsUSD: Double
 }
 
+struct SessionSummary: Codable, Identifiable {
+    var id: String { sessionId }
+    let sessionId: String
+    let project: String
+    let firstDay: String
+    let messageCount: Int
+    let outputTokens: Int
+    let costUSD: Double
+    let isSubagent: Bool
+    let topModel: String
+}
+
 struct StatsCache: Codable {
     let version: Int?
     let lastComputedDate: String?
@@ -117,6 +129,9 @@ struct StatsCache: Codable {
     let dailyModelBreakdown: [DailyModelBreakdown]?
     let dailyHourCounts: [String: [String: Int]]?
     let dailyProjectCosts: [DailyProjectCosts]?
+    let sessions: [SessionSummary]?
+    let subagentCostUSD: Double?
+    let directCostUSD: Double?
 }
 
 struct ModelPricingTable {
