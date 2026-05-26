@@ -73,9 +73,15 @@ Claude Code writes a `.jsonl` log file for every conversation, stored at:
 ~/.claude/projects/**/*.jsonl
 ```
 
-ArgusAI reads these files directly — no cache, no intermediate files. Every 3 seconds it checks if any file has changed and silently updates the numbers.
+Every 3 seconds ArgusAI checks for new data and silently updates the dashboard. Under the hood it uses an embedded SQLite database (`~/.claude/argusai.db`) for fast incremental ingestion:
 
-Each line in a `.jsonl` file is a JSON object. ArgusAI looks at `assistant` messages and reads:
+```
+JSONL files → incremental ingest (new lines only) → SQLite → dashboard
+```
+
+On each refresh, only the lines added since the last run are read and inserted. All KPI queries run against indexed SQL tables, so the dashboard stays snappy even with hundreds of sessions.
+
+ArgusAI looks at `assistant` messages and reads:
 
 - `message.usage.input_tokens` / `output_tokens`
 - `message.usage.cache_read_input_tokens` / `cache_creation_input_tokens`
@@ -84,6 +90,24 @@ Each line in a `.jsonl` file is a JSON object. ArgusAI looks at `assistant` mess
 - `sessionId`, `timestamp`, `cwd` (to group by project)
 
 Cost estimates use [Anthropic's public pricing](https://www.anthropic.com/pricing). They are estimates, not your actual bill.
+
+### Ad-hoc queries
+
+Because all data lives in SQLite, you can run your own queries any time:
+
+```bash
+sqlite3 ~/.claude/argusai.db
+```
+
+Useful tables: `messages`, `sessions`, `tool_events`. Example:
+
+```sql
+-- cost by project, last 30 days
+SELECT project, ROUND(SUM(cost_usd),2) AS cost, COUNT(*) AS messages
+FROM messages
+WHERE day >= date('now', '-30 days')
+GROUP BY project ORDER BY cost DESC;
+```
 
 ---
 

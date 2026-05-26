@@ -19,7 +19,8 @@ Build target is **macOS 26** (`-target arm64-apple-macosx26.0`). Required for Li
 | File | Role |
 |---|---|
 | `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, …) |
-| `MetricsStore.swift` | `ObservableObject` — parses JSONL, owns all state and computed properties |
+| `Database.swift` | `ArgusDB` — SQLite ingestion + all KPI queries; owns `~/.claude/argusai.db` |
+| `MetricsStore.swift` | `ObservableObject` — calls `ArgusDB`, owns all state and computed properties |
 | `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum) |
 | `OverviewView.swift` | Summary KPIs + charts |
 | `ModelsView.swift` | Per-model token breakdown |
@@ -28,13 +29,36 @@ Build target is **macOS 26** (`-target arm64-apple-macosx26.0`). Required for Li
 | `ProjectsView.swift` | Per-project cost/token table and chart |
 | `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, …) |
 | `Theme.swift` | Color palette, `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
+| `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
 
-## Data source
+## Data pipeline
 
-Reads `~/.claude/projects/**/*.jsonl` directly — **no cache file dependency**.  
-Files under a `subagents/` path component are flagged as subagent sessions.
+```
+~/.claude/projects/**/*.jsonl  →  ArgusDB.ingestFiles()  →  ~/.claude/argusai.db  →  ArgusDB.buildStatsCache()  →  views
+```
 
-Relevant JSONL fields (on `type == "assistant"` lines):
+- JSONL files are the source of truth (written by Claude Code, never modified by ArgusAI).
+- `ArgusDB` tracks `lines_processed` per file in the `ingested_files` table — only new lines are read on each 3s refresh.
+- All KPI queries run as SQL against indexed tables; **never re-parse JSONL in Swift**.
+
+### Adding a new data point
+
+1. Add a column to `messages` in the schema string inside `Database.swift`
+2. Populate it in the ingestion loop (Pass 2, the `type == "assistant"` branch)
+3. Add a query method and wire it into `buildStatsCache()`
+4. Add the field to `StatsCache` in `Models.swift`
+5. Add a `filteredXxx` computed property in `MetricsStore.swift`
+
+### DB schema (key tables)
+
+| Table | Key columns |
+|---|---|
+| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` |
+| `sessions` | `session_id` PK · `project` · `is_subagent` |
+| `tool_events` | `(file_path, line_num)` PK · `session_id` · `day` · `count` |
+| `ingested_files` | `path` PK · `lines_processed` |
+
+Relevant JSONL fields ingested (on `type == "assistant"` lines):
 - `message.usage.{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}`
 - `message.usage.server_tool_use.web_search_requests`
 - `message.model`
