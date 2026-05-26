@@ -47,6 +47,7 @@ EOF
 SOURCES=(
     Sources/ClaudeMetrics/Theme.swift
     Sources/ClaudeMetrics/Models.swift
+    Sources/ClaudeMetrics/Database.swift
     Sources/ClaudeMetrics/MetricsStore.swift
     Sources/ClaudeMetrics/Components.swift
     Sources/ClaudeMetrics/ContentView.swift
@@ -70,6 +71,8 @@ swiftc \
     -framework AppKit \
     -framework Foundation \
     -framework Combine \
+    -I Sources/CSQLite \
+    -lsqlite3 \
     -Onone \
     -o "$BUNDLE/ArgusAI"
 

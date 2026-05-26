@@ -24,6 +24,11 @@ class MetricsStore: ObservableObject {
     private var initialLoadDone = false
     private let parseQueue = DispatchQueue(label: "com.claudemetrics.parse", qos: .userInitiated)
 
+    private let db: ArgusDB? = {
+        let dbURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/argusai.db")
+        return try? ArgusDB(path: dbURL.path)
+    }()
+
     init() {
         loadData()
         scheduleAutoRefresh()
@@ -60,7 +65,7 @@ class MetricsStore: ObservableObject {
         parseQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let cache = try self.buildStatsFromJSONL()
+                let cache = try self.buildStatsFromDB()
                 DispatchQueue.main.async {
                     self.stats = cache
                     self.isLoading = false
@@ -90,24 +95,19 @@ class MetricsStore: ObservableObject {
         return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "jsonl" }
     }
 
-    // MARK: - Project name helpers
+    // MARK: - DB-backed build
 
-    private func projectName(cwd: String?, fileURL: URL) -> String {
-        if let cwd = cwd, !cwd.isEmpty {
-            let name = URL(fileURLWithPath: cwd).lastPathComponent
-            return name.isEmpty ? "unknown" : name
+    private func buildStatsFromDB() throws -> StatsCache {
+        guard let db = db else { throw NSError(domain: "ArgusDB", code: 1, userInfo: [NSLocalizedDescriptionKey: "Database unavailable"]) }
+        let files = findJSONLFiles().map { url in
+            (url: url, isSubagent: url.pathComponents.contains("subagents"))
         }
-        let parts = fileURL.pathComponents
-        guard let idx = parts.firstIndex(of: "projects"), idx + 1 < parts.count else { return "unknown" }
-        let segments = parts[idx + 1].split(separator: "-").filter { !$0.isEmpty }
-        if let gitIdx = segments.firstIndex(of: "git"), gitIdx + 1 < segments.count {
-            return segments[(gitIdx + 1)...].joined(separator: "-")
-        }
-        return segments.suffix(2).joined(separator: "-")
+        try db.ingestFiles(files)
+        return try db.buildStatsCache()
     }
 
-    // MARK: - JSONL parsing
-
+    // MARK: - LEGACY (unused — DB path is authoritative)
+    /* keeping Accumulator + buildStatsFromJSONL below for reference only
     private struct Accumulator {
         // Token stats per model
         var modelTokens: [String: (input: Int, output: Int, cacheRead: Int, cacheCreate: Int, webSearch: Int)] = [:]
@@ -398,6 +398,7 @@ class MetricsStore: ObservableObject {
             dailyProjectCosts: dailyProjectCosts.isEmpty ? nil : dailyProjectCosts
         )
     }
+    */
 
     // MARK: - Computed properties
 
