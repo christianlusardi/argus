@@ -11,6 +11,7 @@ struct ClaudeMetricsApp: App {
                 .preferredColorScheme(.dark)
                 .frame(minWidth: 900, idealWidth: 1100, minHeight: 600, idealHeight: 720)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1100, height: 720)
         .windowResizability(.contentSize)
         .commands {

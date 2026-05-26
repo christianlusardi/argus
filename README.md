@@ -26,7 +26,7 @@ Everything updates automatically every 3 seconds. No API key needed. No account.
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later
+- macOS 26 (Tahoe) or later
 - Apple Silicon Mac (M1 or later)
 - [Claude Code](https://claude.ai/code) installed and used at least once
 
@@ -118,4 +118,4 @@ All tabs (Overview, Models, Activity, Schedule, Projects) update when you change
 → The app auto-refreshes every 3 seconds. If you just finished a session, wait a moment. You can also click **Refresh** in the sidebar.
 
 **App won't launch on my Mac**
-→ This build requires Apple Silicon (M1/M2/M3/M4) and macOS 14+. Intel Macs are not supported in the current release.
+→ This build requires Apple Silicon (M1/M2/M3/M4) and macOS 26 (Tahoe). Intel Macs are not supported in the current release.

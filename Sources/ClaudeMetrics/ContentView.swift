@@ -1,4 +1,20 @@
 import SwiftUI
+import AppKit
+
+struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let w = view.window else { return }
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility             = .hidden
+            w.styleMask.insert(.fullSizeContentView)
+            w.isMovableByWindowBackground = true
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
 
 enum NavSection: String, CaseIterable, Identifiable {
     case overview = "Overview"
@@ -54,6 +70,7 @@ struct ContentView: View {
         }
         .background(Color.appBg)
         .ignoresSafeArea()
+        .background { WindowConfigurator() }
     }
 }
 
@@ -84,7 +101,7 @@ struct SidebarView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 22)
+            .padding(.top, 38)
             .padding(.bottom, 20)
 
             // Nav

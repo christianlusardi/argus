@@ -63,7 +63,7 @@ swiftc \
     -module-name ArgusAI \
     -parse-as-library \
     -swift-version 5 \
-    -target arm64-apple-macosx14.0 \
+    -target arm64-apple-macosx26.0 \
     -sdk "$SDK" \
     -framework SwiftUI \
     -framework Charts \

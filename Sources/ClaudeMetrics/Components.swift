@@ -54,9 +54,7 @@ struct MetricCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -81,9 +79,7 @@ struct SectionCard<Content: View>: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
