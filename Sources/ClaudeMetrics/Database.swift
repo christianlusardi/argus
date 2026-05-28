@@ -27,6 +27,13 @@ final class ArgusDB {
         // Migration: add cwd to sessions and ai_lines to messages (silently ignored if already present)
         sqlite3_exec(db, "ALTER TABLE sessions ADD COLUMN cwd TEXT DEFAULT ''", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN ai_lines INTEGER DEFAULT 0", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE git_stats_cache ADD COLUMN since_date TEXT DEFAULT ''", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE git_stats_cache ADD COLUMN session_lines INTEGER DEFAULT 0", nil, nil, nil)
+        // One-time: clear git_stats_cache to force recomputation with session-window-based numerator
+        if !UserDefaults.standard.bool(forKey: "argusai.gitCacheReset.v1") {
+            sqlite3_exec(db, "DELETE FROM git_stats_cache", nil, nil, nil)
+            UserDefaults.standard.set(true, forKey: "argusai.gitCacheReset.v1")
+        }
         backfillSessionCwds()
     }
 
@@ -65,11 +72,13 @@ final class ArgusDB {
             PRIMARY KEY (file_path, line_num)
         );
         CREATE TABLE IF NOT EXISTS git_stats_cache (
-            project     TEXT PRIMARY KEY,
-            cwd         TEXT NOT NULL DEFAULT '',
-            lines_added INTEGER DEFAULT 0,
-            head_hash   TEXT NOT NULL DEFAULT '',
-            updated_at  TEXT NOT NULL DEFAULT ''
+            project      TEXT PRIMARY KEY,
+            cwd          TEXT NOT NULL DEFAULT '',
+            lines_added  INTEGER DEFAULT 0,
+            session_lines INTEGER DEFAULT 0,
+            head_hash    TEXT NOT NULL DEFAULT '',
+            since_date   TEXT NOT NULL DEFAULT '',
+            updated_at   TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS tool_events (
             file_path  TEXT NOT NULL,
@@ -328,6 +337,10 @@ final class ArgusDB {
                             return sum + edits.reduce(0) { s, e in
                                 s + ((e["new_string"] as? String ?? "").components(separatedBy: "\n").count)
                             }
+                        case "Bash":
+                            // Count lines inside heredoc blocks (most common pattern for large file writes via Bash)
+                            let cmd = input["command"] as? String ?? ""
+                            return sum + bashHeredocLineCount(cmd)
                         default: return sum
                         }
                     }
@@ -594,7 +607,7 @@ final class ArgusDB {
                 SUM(m.input_tokens), SUM(m.output_tokens),
                 SUM(m.cache_read_tokens), SUM(m.cache_create_tokens), SUM(m.web_searches),
                 COUNT(DISTINCT m.session_id), COUNT(*), SUM(m.cost_usd),
-                SUM(m.ai_lines),
+                COALESCE(g.session_lines, 0),
                 COALESCE(g.lines_added, 0)
             FROM messages m
             LEFT JOIN git_stats_cache g ON g.project = m.project
@@ -915,6 +928,8 @@ final class ArgusDB {
                         return sum + edits.reduce(0) {
                             $0 + (($1["new_string"] as? String ?? "").components(separatedBy: "\n").count)
                         }
+                    case "Bash":
+                        return sum + bashHeredocLineCount(input["command"] as? String ?? "")
                     default: return sum
                     }
                 }
@@ -927,41 +942,148 @@ final class ArgusDB {
     }
 
     func updateGitStats() throws {
-        // Collect distinct (project, cwd) pairs
-        let s = try prepare("SELECT DISTINCT project, cwd FROM sessions WHERE cwd != '' AND cwd IS NOT NULL")
-        var projects: [(String, String)] = []
-        while sqlite3_step(s) == SQLITE_ROW {
-            let p = colTxt(s, 0); let c = colTxt(s, 1)
-            if !p.isEmpty && !c.isEmpty { projects.append((p, c)) }
-        }
-        sqlite3_finalize(s)
-        guard !projects.isEmpty else { return }
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoPlain = ISO8601DateFormatter()
+        isoPlain.formatOptions = [.withInternetDateTime]
+        func parseDate(_ str: String) -> Date? { isoFrac.date(from: str) ?? isoPlain.date(from: str) }
 
-        // Load cached HEAD hashes
-        let cs = try prepare("SELECT project, head_hash FROM git_stats_cache")
-        var cached: [String: String] = [:]
-        while sqlite3_step(cs) == SQLITE_ROW { cached[colTxt(cs, 0)] = colTxt(cs, 1) }
+        // Collect (project, cwd, first_session_day)
+        let ps = try prepare("""
+            SELECT s.project, s.cwd, MIN(m.day)
+            FROM sessions s JOIN messages m ON m.project = s.project
+            WHERE s.cwd != '' AND s.cwd IS NOT NULL AND m.day != ''
+            GROUP BY s.project, s.cwd
+        """)
+        var projectMeta: [(proj: String, cwd: String, since: String)] = []
+        while sqlite3_step(ps) == SQLITE_ROW {
+            let p = colTxt(ps, 0); let c = colTxt(ps, 1); let d = colTxt(ps, 2)
+            if !p.isEmpty && !c.isEmpty { projectMeta.append((p, c, d)) }
+        }
+        sqlite3_finalize(ps)
+        guard !projectMeta.isEmpty else { return }
+
+        // Collect session time windows per project for the numerator
+        let ws = try prepare("""
+            SELECT m.project, MIN(m.timestamp), MAX(m.timestamp)
+            FROM messages m
+            JOIN sessions s ON s.session_id = m.session_id
+            WHERE m.timestamp != '' AND s.cwd != '' AND s.cwd IS NOT NULL
+            GROUP BY m.session_id, m.project
+        """)
+        var sessionWindows: [String: [(start: Date, end: Date)]] = [:]
+        while sqlite3_step(ws) == SQLITE_ROW {
+            let proj  = colTxt(ws, 0)
+            guard let start = parseDate(colTxt(ws, 1)),
+                  let end   = parseDate(colTxt(ws, 2)) else { continue }
+            sessionWindows[proj, default: []].append((start: start, end: end))
+        }
+        sqlite3_finalize(ws)
+
+        // Load cached state to skip unchanged projects
+        let cs = try prepare("SELECT project, head_hash, since_date, session_lines FROM git_stats_cache")
+        var cachedHead:         [String: String] = [:]
+        var cachedSince:        [String: String] = [:]
+        var cachedSessionLines: [String: Int]    = [:]
+        while sqlite3_step(cs) == SQLITE_ROW {
+            let p = colTxt(cs, 0)
+            cachedHead[p]         = colTxt(cs, 1)
+            cachedSince[p]        = colTxt(cs, 2)
+            cachedSessionLines[p] = colInt(cs, 3)
+        }
         sqlite3_finalize(cs)
 
         let upsert = try prepare("""
-            INSERT OR REPLACE INTO git_stats_cache(project,cwd,lines_added,head_hash,updated_at)
-            VALUES(?,?,?,?,?)
+            INSERT OR REPLACE INTO git_stats_cache(project,cwd,lines_added,session_lines,head_hash,since_date,updated_at)
+            VALUES(?,?,?,?,?,?,?)
         """)
         defer { sqlite3_finalize(upsert) }
         let now = ISO8601DateFormatter().string(from: Date())
 
-        for (proj, cwd) in projects {
+        for (proj, cwd, since) in projectMeta {
             guard FileManager.default.fileExists(atPath: cwd) else { continue }
             let head = gitRun(cwd: cwd, args: ["rev-parse", "HEAD"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !head.isEmpty, !head.hasPrefix("fatal") else { continue }
-            if cached[proj] == head { continue }  // no new commits
+            // Skip if HEAD, since_date unchanged and session_lines already populated
+            let alreadyComputed = (cachedSessionLines[proj] ?? 0) > 0
+            if cachedHead[proj] == head && cachedSince[proj] == since && alreadyComputed { continue }
 
-            let linesAdded = gitLinesAdded(cwd: cwd)
-            bindTxt(upsert, 1, proj); bindTxt(upsert, 2, cwd)
-            bindInt(upsert, 3, linesAdded); bindTxt(upsert, 4, head); bindTxt(upsert, 5, now)
+            // Denominator: all git lines added since first Claude session
+            let linesAdded = gitLinesAdded(cwd: cwd, since: since)
+
+            // Numerator: git lines committed during Claude session windows (+ 30 min buffer)
+            let windows = sessionWindows[proj] ?? []
+            let merged  = mergeWindows(windows, bufferSeconds: 1800)
+            let sessionLines = gitLinesInWindows(cwd: cwd, windows: merged)
+
+            bindTxt(upsert, 1, proj);        bindTxt(upsert, 2, cwd)
+            bindInt(upsert, 3, linesAdded);  bindInt(upsert, 4, sessionLines)
+            bindTxt(upsert, 5, head);        bindTxt(upsert, 6, since)
+            bindTxt(upsert, 7, now)
             sqlite3_step(upsert); sqlite3_reset(upsert)
         }
+    }
+
+    private func mergeWindows(_ windows: [(start: Date, end: Date)], bufferSeconds: Int) -> [(start: Date, end: Date)] {
+        guard !windows.isEmpty else { return [] }
+        let buffer = TimeInterval(bufferSeconds)
+        let sorted = windows.sorted { $0.start < $1.start }
+        var merged: [(start: Date, end: Date)] = [(sorted[0].start, sorted[0].end.addingTimeInterval(buffer))]
+        for w in sorted.dropFirst() {
+            let bufferedEnd = w.end.addingTimeInterval(buffer)
+            if w.start <= merged[merged.count - 1].end {
+                if bufferedEnd > merged[merged.count - 1].end {
+                    merged[merged.count - 1] = (merged[merged.count - 1].start, bufferedEnd)
+                }
+            } else {
+                merged.append((w.start, bufferedEnd))
+            }
+        }
+        return merged
+    }
+
+    private func gitLinesInWindows(cwd: String, windows: [(start: Date, end: Date)]) -> Int {
+        guard !windows.isEmpty else { return 0 }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        var total = 0
+        for w in windows {
+            let after = fmt.string(from: w.start)
+            let until = fmt.string(from: w.end)
+            let out = gitRun(cwd: cwd, args: ["log", "--numstat", "--pretty=", "--no-merges",
+                                              "--after=\(after)", "--until=\(until)"])
+            total += out.split(separator: "\n").reduce(0) { sum, line in
+                let parts = line.split(separator: "\t")
+                guard parts.count >= 2, parts[0] != "-", let n = Int(parts[0]) else { return sum }
+                return sum + n
+            }
+        }
+        return total
+    }
+
+    // Count lines inside bash heredoc blocks (cat > file << 'EOF' ... EOF)
+    // Handles any delimiter name and optional quoting/dashes
+    private func bashHeredocLineCount(_ command: String) -> Int {
+        let lines = command.components(separatedBy: "\n")
+        var total = 0
+        var endMarker: String? = nil
+        for line in lines {
+            if let marker = endMarker {
+                if line.trimmingCharacters(in: .whitespaces) == marker { endMarker = nil }
+                else { total += 1 }
+            } else {
+                // Detect << or <<- followed by optional quotes and word
+                if let match = line.range(of: #"<<-?\s*['"´]?(\w+)['"´]?"#, options: .regularExpression) {
+                    let raw = String(line[match])
+                    let marker = raw
+                        .replacingOccurrences(of: #"^<<-?\s*"#, with: "", options: .regularExpression)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "'\"´ \t"))
+                    if !marker.isEmpty { endMarker = marker }
+                }
+            }
+        }
+        return total
     }
 
     private func gitRun(cwd: String, args: [String]) -> String {
@@ -974,8 +1096,10 @@ final class ArgusDB {
         return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
-    private func gitLinesAdded(cwd: String) -> Int {
-        let out = gitRun(cwd: cwd, args: ["log", "--numstat", "--pretty=", "--no-merges"])
+    private func gitLinesAdded(cwd: String, since: String = "") -> Int {
+        var args = ["log", "--numstat", "--pretty=", "--no-merges"]
+        if !since.isEmpty { args += ["--since=\(since)"] }
+        let out = gitRun(cwd: cwd, args: args)
         return out.split(separator: "\n").reduce(0) { sum, line in
             let parts = line.split(separator: "\t")
             guard parts.count >= 2, parts[0] != "-", let n = Int(parts[0]) else { return sum }

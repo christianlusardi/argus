@@ -217,8 +217,8 @@ class MetricsStore: ObservableObject {
         let feedbackURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/argusai_feedback.jsonl")
         try? db.ingestFeedback(at: feedbackURL)
-        // One-shot: backfill ai_lines for previously-ingested messages
-        let aiBackfillKey = "argusai.aiLinesBackfillDone"
+        // One-shot: backfill ai_lines (v2 = includes Bash heredoc writes)
+        let aiBackfillKey = "argusai.aiLinesBackfillDone.v2"
         if !UserDefaults.standard.bool(forKey: aiBackfillKey) {
             try? db.backfillAiLines()
             UserDefaults.standard.set(true, forKey: aiBackfillKey)
