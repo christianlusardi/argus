@@ -14,13 +14,15 @@ ArgusAI reads the local log files that Claude Code writes on your machine and tu
 
 | Tab | What you see |
 |---|---|
-| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak |
+| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown |
 | **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) |
 | **Activity** | Daily message chart, day-of-week heatmap, active streak |
 | **Schedule** | Hourly usage distribution, your peak hour, average start/end time |
 | **Projects** | Cost and token usage broken down by repository |
+| **Sessions** | Per-session table with cost, model, output tokens and subagent badge |
+| **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend, daily cost chart, response time, cost per user |
 
-Everything updates automatically every 3 seconds. No API key needed. No account. No data leaves your machine.
+Everything updates automatically every 3 seconds. No data leaves your machine.
 
 ---
 
@@ -85,9 +87,11 @@ ArgusAI looks at `assistant` messages and reads:
 
 - `message.usage.input_tokens` / `output_tokens`
 - `message.usage.cache_read_input_tokens` / `cache_creation_input_tokens`
-- `message.usage.server_tool_use.web_search_requests`
+- `message.content[]` tool_use blocks — `name == "WebSearch"` are counted as web searches
 - `message.model`
 - `sessionId`, `timestamp`, `cwd` (to group by project)
+
+It also reads `user` messages to capture human-typed turns for response time calculation (time from user message to first assistant token).
 
 Cost estimates use [Anthropic's public pricing](https://www.anthropic.com/pricing). They are estimates, not your actual bill.
 
@@ -99,7 +103,7 @@ Because all data lives in SQLite, you can run your own queries any time:
 sqlite3 ~/.claude/argusai.db
 ```
 
-Useful tables: `messages`, `sessions`, `tool_events`. Example:
+Useful tables: `messages`, `sessions`, `tool_events`, `user_turns`, `account_timeline`. Example:
 
 ```sql
 -- cost by project, last 30 days
@@ -107,6 +111,11 @@ SELECT project, ROUND(SUM(cost_usd),2) AS cost, COUNT(*) AS messages
 FROM messages
 WHERE day >= date('now', '-30 days')
 GROUP BY project ORDER BY cost DESC;
+
+-- cost by account
+SELECT account_uuid, ROUND(SUM(cost_usd),2) AS cost
+FROM messages
+GROUP BY account_uuid ORDER BY cost DESC;
 ```
 
 ---
@@ -117,8 +126,9 @@ GROUP BY project ORDER BY cost DESC;
 
 ---
 
-## Date filters
+## Filters
 
+### Time range
 Use the **TIME RANGE** picker in the sidebar to scope everything to:
 
 - **Today** — current day only
@@ -126,7 +136,19 @@ Use the **TIME RANGE** picker in the sidebar to scope everything to:
 - **30d** — last 30 days
 - **All** — since you started using Claude Code
 
-All tabs (Overview, Models, Activity, Schedule, Projects) update when you change the filter.
+### Account filter
+If you use Claude Code with **multiple accounts or API keys**, ArgusAI tracks each one separately and shows an **ACCOUNT** picker in the sidebar. Selecting an account scopes all tabs — costs, tokens, sessions, projects — to that identity only.
+
+ArgusAI detects the active auth automatically, following Claude Code's own priority:
+
+1. `ANTHROPIC_API_KEY` environment variable
+2. `apiKeyHelper` script in `~/.claude/settings.json`
+3. API key stored in the macOS Keychain (set via `/config`)
+4. OAuth account (`~/.claude.json`)
+
+Each API key and each OAuth account is treated as a **distinct identity** with its own history. A setup with 3 API keys and 2 OAuth accounts produces 5 separate entries, all filterable and individually charted in the "By Account" Overview card.
+
+The ACCOUNT section is hidden when you only have one identity — it only appears when there's something to distinguish.
 
 ---
 

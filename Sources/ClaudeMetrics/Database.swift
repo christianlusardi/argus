@@ -22,6 +22,8 @@ final class ArgusDB {
         sqlite3_exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;", nil, nil, &pErr)
         sqlite3_free(pErr)
         try execSQL(schema)
+        // Migration: add account_uuid to existing messages tables (silently ignored if already present)
+        sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN account_uuid TEXT DEFAULT NULL", nil, nil, nil)
     }
 
     deinit { sqlite3_close(db) }
@@ -64,11 +66,29 @@ final class ArgusDB {
             count      INTEGER DEFAULT 0,
             PRIMARY KEY (file_path, line_num)
         );
+        CREATE TABLE IF NOT EXISTS account_timeline (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_uuid TEXT NOT NULL DEFAULT 'unknown',
+            email        TEXT NOT NULL DEFAULT '',
+            org_name     TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            auth_type    TEXT NOT NULL DEFAULT 'oauth',
+            recorded_at  TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_msg_day     ON messages(day);
         CREATE INDEX IF NOT EXISTS idx_msg_model   ON messages(model);
         CREATE INDEX IF NOT EXISTS idx_msg_project ON messages(project);
         CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(session_id);
         CREATE INDEX IF NOT EXISTS idx_tool_day    ON tool_events(day);
+        CREATE TABLE IF NOT EXISTS user_turns (
+            file_path  TEXT NOT NULL,
+            line_num   INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            timestamp  TEXT NOT NULL DEFAULT '',
+            day        TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (file_path, line_num)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ut_session_ts ON user_turns(session_id, timestamp);
     """
 
     // MARK: - Low-level helpers
@@ -125,9 +145,52 @@ final class ArgusDB {
         return segs.suffix(2).joined(separator: "-")
     }
 
+    // MARK: - Account filter (set by MetricsStore before buildStatsCache)
+
+    var accountFilter: String?
+
+    // SQL fragment appended to WHERE — safe: value comes from our own DB, not user input
+    private var af: String {
+        guard let f = accountFilter else { return "" }
+        return "AND account_uuid = '\(f)'"
+    }
+    private func af(_ alias: String) -> String {
+        guard let f = accountFilter else { return "" }
+        return "AND \(alias).account_uuid = '\(f)'"
+    }
+
+    // MARK: - Account tracking
+
+    func claimHistoricalMessages(for accountUuid: String) throws {
+        let stmt = try prepare("UPDATE messages SET account_uuid = ? WHERE account_uuid IS NULL")
+        bindTxt(stmt, 1, accountUuid)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
+    func recordAccount(_ account: AccountInfo) throws {
+        let checkStmt = try prepare("SELECT account_uuid FROM account_timeline ORDER BY id DESC LIMIT 1")
+        var lastUuid = ""
+        if sqlite3_step(checkStmt) == SQLITE_ROW { lastUuid = colTxt(checkStmt, 0) }
+        sqlite3_finalize(checkStmt)
+        guard lastUuid != account.accountUuid else { return }
+
+        let now = ISO8601DateFormatter().string(from: Date())
+        let stmt = try prepare(
+            "INSERT INTO account_timeline(account_uuid,email,org_name,display_name,auth_type,recorded_at) VALUES(?,?,?,?,?,?)")
+        bindTxt(stmt, 1, account.accountUuid)
+        bindTxt(stmt, 2, account.email)
+        bindTxt(stmt, 3, account.orgName)
+        bindTxt(stmt, 4, account.displayName)
+        bindTxt(stmt, 5, account.authType)
+        bindTxt(stmt, 6, now)
+        sqlite3_step(stmt)
+        sqlite3_finalize(stmt)
+    }
+
     // MARK: - Ingestion
 
-    func ingestFiles(_ files: [(url: URL, isSubagent: Bool)]) throws {
+    func ingestFiles(_ files: [(url: URL, isSubagent: Bool)], account: AccountInfo?) throws {
         // Load already-processed line counts
         var linesProcessed: [String: Int] = [:]
         do {
@@ -151,21 +214,25 @@ final class ArgusDB {
         let cal = Calendar.current
         func parseDate(_ s: String) -> Date? { isoFrac.date(from: s) ?? isoPlain.date(from: s) }
 
+        if let account { try recordAccount(account) }
+
         try execSQL("BEGIN")
 
         let sessInsert = try prepare(
             "INSERT OR IGNORE INTO sessions(session_id, project, is_subagent) VALUES(?,?,?)")
         let msgInsert  = try prepare("""
-            INSERT OR IGNORE INTO messages
+            INSERT OR REPLACE INTO messages
             (file_path,line_num,session_id,timestamp,day,hour,model,
              input_tokens,output_tokens,cache_read_tokens,cache_create_tokens,
-             web_searches,cost_usd,project,is_subagent)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             web_searches,cost_usd,project,is_subagent,account_uuid)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """)
         let toolInsert = try prepare(
             "INSERT OR IGNORE INTO tool_events(file_path,line_num,session_id,day,count) VALUES(?,?,?,?,?)")
         let fileUpsert = try prepare(
             "INSERT OR REPLACE INTO ingested_files(path,lines_processed) VALUES(?,?)")
+        let utInsert = try prepare(
+            "INSERT OR IGNORE INTO user_turns(file_path,line_num,session_id,timestamp,day) VALUES(?,?,?,?,?)")
 
         for (fileURL, isSubagent) in files {
             let path = fileURL.path
@@ -217,7 +284,12 @@ final class ArgusDB {
                     let output = usage["output_tokens"]               as? Int ?? 0
                     let cr     = usage["cache_read_input_tokens"]     as? Int ?? 0
                     let cc     = usage["cache_creation_input_tokens"] as? Int ?? 0
-                    let ws     = (usage["server_tool_use"] as? [String: Any])?["web_search_requests"] as? Int ?? 0
+                    // server_tool_use.web_search_requests is always 0 in Claude Code JSONL;
+                    // actual web searches appear as tool_use blocks with name "WebSearch"
+                    let contentBlocks = msg["content"] as? [[String: Any]] ?? []
+                    let ws = contentBlocks.filter {
+                        $0["type"] as? String == "tool_use" && $0["name"] as? String == "WebSearch"
+                    }.count
 
                     guard input + output + cr + cc > 0 else { continue }
 
@@ -233,20 +305,30 @@ final class ArgusDB {
                     bindInt(msgInsert, 11, cc);     bindInt(msgInsert, 12, ws)
                     bindDbl(msgInsert, 13, cost);   bindTxt(msgInsert, 14, proj)
                     bindInt(msgInsert, 15, isSubagent ? 1 : 0)
+                    if let uuid = account?.accountUuid { bindTxt(msgInsert, 16, uuid) }
+                    else { sqlite3_bind_null(msgInsert, 16) }
                     sqlite3_step(msgInsert)
                     sqlite3_reset(msgInsert)
                 }
 
                 if type == "user", let msg = obj["message"] as? [String: Any], !day.isEmpty {
-                    let toolCount = (msg["content"] as? [[String: Any]])?.filter {
-                        $0["type"] as? String == "tool_result"
-                    }.count ?? 0
+                    let contentArr = msg["content"] as? [[String: Any]] ?? []
+                    let toolCount = contentArr.filter { $0["type"] as? String == "tool_result" }.count
                     if toolCount > 0 {
                         bindTxt(toolInsert, 1, path); bindInt(toolInsert, 2, lineNum)
                         bindTxt(toolInsert, 3, sid);  bindTxt(toolInsert, 4, day)
                         bindInt(toolInsert, 5, toolCount)
                         sqlite3_step(toolInsert)
                         sqlite3_reset(toolInsert)
+                    }
+                    let hasText = contentArr.contains { $0["type"] as? String == "text" }
+                        || msg["content"] is String
+                    if hasText && !ts.isEmpty {
+                        bindTxt(utInsert, 1, path); bindInt(utInsert, 2, lineNum)
+                        bindTxt(utInsert, 3, sid);  bindTxt(utInsert, 4, ts)
+                        bindTxt(utInsert, 5, day)
+                        sqlite3_step(utInsert)
+                        sqlite3_reset(utInsert)
                     }
                 }
             }
@@ -259,6 +341,7 @@ final class ArgusDB {
         sqlite3_finalize(msgInsert)
         sqlite3_finalize(toolInsert)
         sqlite3_finalize(fileUpsert)
+        sqlite3_finalize(utInsert)
 
         try execSQL("COMMIT")
     }
@@ -278,6 +361,10 @@ final class ArgusDB {
         let (subCnt, dirCnt)    = try queryAgentCounts()
         let sessions            = try querySessions()
         let (subCost, dirCost)  = try queryAgentTypeCosts()
+        let accountCosts        = try queryAccountCosts()
+        let knownAccounts       = try queryKnownAccounts()
+        let dailyAvgResponseTime = try queryDailyAvgResponseTime()
+        let dailyAccountCosts   = try queryDailyAccountCosts()
 
         let dailyCosts = Dictionary(uniqueKeysWithValues: dailyTotals.map { ($0.date, $0.estimatedCostUSD) })
 
@@ -305,7 +392,11 @@ final class ArgusDB {
             dailyProjectCosts: dailyProjectCosts.isEmpty ? nil : dailyProjectCosts,
             sessions: sessions.isEmpty ? nil : sessions,
             subagentCostUSD: subCost,
-            directCostUSD: dirCost
+            directCostUSD: dirCost,
+            accountCosts: accountCosts.isEmpty ? nil : accountCosts,
+            knownAccountsList: knownAccounts.isEmpty ? nil : knownAccounts,
+            dailyAvgResponseTimeSec: dailyAvgResponseTime.isEmpty ? nil : dailyAvgResponseTime,
+            dailyAccountCosts: dailyAccountCosts.isEmpty ? nil : dailyAccountCosts
         )
     }
 
@@ -316,7 +407,7 @@ final class ArgusDB {
             SELECT day, model,
                 SUM(input_tokens), SUM(output_tokens),
                 SUM(cache_read_tokens), SUM(cache_create_tokens), SUM(web_searches)
-            FROM messages WHERE day != ''
+            FROM messages WHERE day != '' \(af)
             GROUP BY day, model ORDER BY day
         """)
         var byDay: [String: [String: (Int, Int, Int, Int, Int)]] = [:]
@@ -360,7 +451,7 @@ final class ArgusDB {
         let stmt = try prepare("""
             SELECT model, SUM(input_tokens), SUM(output_tokens),
                 SUM(cache_read_tokens), SUM(cache_create_tokens), SUM(web_searches)
-            FROM messages GROUP BY model
+            FROM messages WHERE 1=1 \(af) GROUP BY model
         """)
         defer { sqlite3_finalize(stmt) }
         var result: [String: ModelTokenStats] = [:]
@@ -383,7 +474,7 @@ final class ArgusDB {
             FROM messages m
             LEFT JOIN (SELECT day, SUM(count) AS count FROM tool_events GROUP BY day) te
                 ON te.day = m.day
-            WHERE m.day != ''
+            WHERE m.day != '' \(af("m"))
             GROUP BY m.day ORDER BY m.day
         """)
         defer { sqlite3_finalize(stmt) }
@@ -397,7 +488,7 @@ final class ArgusDB {
     }
 
     private func queryHourCounts() throws -> [String: Int] {
-        let stmt = try prepare("SELECT hour, COUNT(*) FROM messages GROUP BY hour")
+        let stmt = try prepare("SELECT hour, COUNT(*) FROM messages WHERE 1=1 \(af) GROUP BY hour")
         defer { sqlite3_finalize(stmt) }
         var result: [String: Int] = [:]
         while sqlite3_step(stmt) == SQLITE_ROW { result["\(colInt(stmt,0))"] = colInt(stmt,1) }
@@ -406,7 +497,7 @@ final class ArgusDB {
 
     private func queryDailyHourCounts() throws -> [String: [String: Int]] {
         let stmt = try prepare("""
-            SELECT day, hour, COUNT(*) FROM messages WHERE day != ''
+            SELECT day, hour, COUNT(*) FROM messages WHERE day != '' \(af)
             GROUP BY day, hour ORDER BY day
         """)
         defer { sqlite3_finalize(stmt) }
@@ -421,7 +512,7 @@ final class ArgusDB {
     private func queryDailyWorkHours() throws -> [DailyWorkHours] {
         let stmt = try prepare("""
             SELECT day, MIN(hour), MAX(hour) FROM messages
-            WHERE day != '' GROUP BY day ORDER BY day
+            WHERE day != '' \(af) GROUP BY day ORDER BY day
         """)
         defer { sqlite3_finalize(stmt) }
         var result: [DailyWorkHours] = []
@@ -437,7 +528,7 @@ final class ArgusDB {
                 SUM(input_tokens), SUM(output_tokens),
                 SUM(cache_read_tokens), SUM(cache_create_tokens), SUM(web_searches),
                 COUNT(DISTINCT session_id), COUNT(*), SUM(cost_usd)
-            FROM messages GROUP BY project ORDER BY SUM(cost_usd) DESC
+            FROM messages WHERE 1=1 \(af) GROUP BY project ORDER BY SUM(cost_usd) DESC
         """)
         defer { sqlite3_finalize(stmt) }
         var result: [ProjectStats] = []
@@ -455,7 +546,7 @@ final class ArgusDB {
     private func queryDailyProjectCosts() throws -> [DailyProjectCosts] {
         let stmt = try prepare("""
             SELECT day, project, SUM(cost_usd), SUM(output_tokens), COUNT(*), SUM(web_searches)
-            FROM messages WHERE day != ''
+            FROM messages WHERE day != '' \(af)
             GROUP BY day, project ORDER BY day
         """)
         defer { sqlite3_finalize(stmt) }
@@ -480,21 +571,21 @@ final class ArgusDB {
     private func querySessionAggregates() throws -> (Int, Int, LongestSessionInfo?, String?, Int) {
         var totalMessages = 0
         do {
-            let s = try prepare("SELECT COUNT(*) FROM messages")
+            let s = try prepare("SELECT COUNT(*) FROM messages WHERE 1=1 \(af)")
             if sqlite3_step(s) == SQLITE_ROW { totalMessages = colInt(s,0) }
             sqlite3_finalize(s)
         }
 
         var totalSessions = 0
         do {
-            let s = try prepare("SELECT COUNT(DISTINCT session_id) FROM messages")
+            let s = try prepare("SELECT COUNT(DISTINCT session_id) FROM messages WHERE 1=1 \(af)")
             if sqlite3_step(s) == SQLITE_ROW { totalSessions = colInt(s,0) }
             sqlite3_finalize(s)
         }
 
         var longestSession: LongestSessionInfo?
         do {
-            let s = try prepare("SELECT session_id, COUNT(*) AS c FROM messages GROUP BY session_id ORDER BY c DESC LIMIT 1")
+            let s = try prepare("SELECT session_id, COUNT(*) AS c FROM messages WHERE 1=1 \(af) GROUP BY session_id ORDER BY c DESC LIMIT 1")
             if sqlite3_step(s) == SQLITE_ROW {
                 longestSession = LongestSessionInfo(sessionId: colTxt(s,0), duration: nil, messageCount: colInt(s,1), timestamp: nil)
             }
@@ -503,7 +594,7 @@ final class ArgusDB {
 
         var firstDate: String?
         do {
-            let s = try prepare("SELECT MIN(timestamp) FROM messages WHERE timestamp != ''")
+            let s = try prepare("SELECT MIN(timestamp) FROM messages WHERE timestamp != '' \(af)")
             if sqlite3_step(s) == SQLITE_ROW {
                 let v = colTxt(s,0); if !v.isEmpty { firstDate = v }
             }
@@ -514,7 +605,7 @@ final class ArgusDB {
         do {
             let s = try prepare("""
                 SELECT CAST(SUM(output_tokens) AS REAL) / NULLIF(COUNT(DISTINCT session_id),0)
-                FROM messages
+                FROM messages WHERE 1=1 \(af)
             """)
             if sqlite3_step(s) == SQLITE_ROW { avgOut = Int(colDbl(s,0)) }
             sqlite3_finalize(s)
@@ -525,7 +616,7 @@ final class ArgusDB {
 
     private func queryAgentCounts() throws -> (Int, Int) {
         var sub = 0, direct = 0
-        let s = try prepare("SELECT is_subagent, COUNT(DISTINCT session_id) FROM messages GROUP BY is_subagent")
+        let s = try prepare("SELECT is_subagent, COUNT(DISTINCT session_id) FROM messages WHERE 1=1 \(af) GROUP BY is_subagent")
         while sqlite3_step(s) == SQLITE_ROW {
             if colInt(s,0) == 1 { sub = colInt(s,1) } else { direct = colInt(s,1) }
         }
@@ -539,7 +630,7 @@ final class ArgusDB {
                 SUM(m.output_tokens), SUM(m.cost_usd), MAX(m.is_subagent),
                 (SELECT model FROM messages WHERE session_id = m.session_id
                  GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1)
-            FROM messages m WHERE m.day != ''
+            FROM messages m WHERE m.day != '' \(af("m"))
             GROUP BY m.session_id ORDER BY SUM(m.cost_usd) DESC
         """)
         defer { sqlite3_finalize(stmt) }
@@ -562,12 +653,124 @@ final class ArgusDB {
     func queryAgentTypeCosts() throws -> (Double?, Double?) {
         var subCost: Double? = nil
         var dirCost: Double? = nil
-        let s = try prepare("SELECT is_subagent, SUM(cost_usd) FROM messages GROUP BY is_subagent")
+        let s = try prepare("SELECT is_subagent, SUM(cost_usd) FROM messages WHERE 1=1 \(af) GROUP BY is_subagent")
         defer { sqlite3_finalize(s) }
         while sqlite3_step(s) == SQLITE_ROW {
             let cost = colDbl(s, 1)
             if colInt(s, 0) == 1 { subCost = cost } else { dirCost = cost }
         }
         return (subCost, dirCost)
+    }
+
+    func queryAccountCosts() throws -> [AccountCostBreakdown] {
+        let stmt = try prepare("""
+            SELECT m.account_uuid,
+                   at.email, at.org_name, at.display_name, at.auth_type,
+                   SUM(m.cost_usd), COUNT(*)
+            FROM messages m
+            JOIN (SELECT account_uuid, MAX(id) as mid FROM account_timeline GROUP BY account_uuid) latest
+                ON latest.account_uuid = m.account_uuid
+            JOIN account_timeline at ON at.id = latest.mid
+            WHERE m.account_uuid IS NOT NULL
+            GROUP BY m.account_uuid
+            HAVING SUM(m.cost_usd) > 0
+            ORDER BY SUM(m.cost_usd) DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [AccountCostBreakdown] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let uuid     = colTxt(stmt, 0)
+            let email    = colTxt(stmt, 1)
+            let org      = colTxt(stmt, 2)
+            let dispName = colTxt(stmt, 3)
+            let authType = colTxt(stmt, 4)
+            let cost     = colDbl(stmt, 5)
+            let msgs     = Int(sqlite3_column_int64(stmt, 6))
+            let isOAuth  = authType == "oauth"
+            let label    = isOAuth ? (dispName.isEmpty ? email : dispName) : "API Key"
+            let subtitle = isOAuth ? org : "No OAuth account"
+            result.append(AccountCostBreakdown(accountUuid: uuid, label: label,
+                                               subtitle: subtitle, authType: authType,
+                                               costUSD: cost, messageCount: msgs))
+        }
+        return result
+    }
+
+    private func queryDailyAccountCosts() throws -> [DailyAccountCosts] {
+        let stmt = try prepare("""
+            SELECT day, account_uuid, SUM(cost_usd), COUNT(*)
+            FROM messages
+            WHERE account_uuid IS NOT NULL \(af)
+            GROUP BY day, account_uuid
+            ORDER BY day
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var byCosts: [String: [String: Double]] = [:]
+        var byMsgs:  [String: [String: Int]]    = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let day  = colTxt(stmt, 0)
+            let uuid = colTxt(stmt, 1)
+            let cost = colDbl(stmt, 2)
+            let msgs = Int(sqlite3_column_int64(stmt, 3))
+            byCosts[day, default: [:]][uuid] = (byCosts[day]?[uuid] ?? 0) + cost
+            byMsgs[day,  default: [:]][uuid] = (byMsgs[day]?[uuid]  ?? 0) + msgs
+        }
+        return byCosts.keys.sorted().map {
+            DailyAccountCosts(date: $0, costs: byCosts[$0]!, messages: byMsgs[$0] ?? [:])
+        }
+    }
+
+    private func queryDailyAvgResponseTime() throws -> [String: Double] {
+        let stmt = try prepare("""
+            SELECT m.day,
+                AVG(
+                    CAST(strftime('%s', m.timestamp) AS REAL) -
+                    CAST(strftime('%s', ut.timestamp) AS REAL)
+                )
+            FROM messages m
+            JOIN user_turns ut
+                ON ut.session_id = m.session_id
+               AND ut.timestamp = (
+                   SELECT MAX(ut2.timestamp)
+                   FROM user_turns ut2
+                   WHERE ut2.session_id = m.session_id
+                     AND ut2.timestamp < m.timestamp
+               )
+            WHERE m.day != '' AND m.timestamp != '' \(af)
+            GROUP BY m.day
+            HAVING AVG(
+                CAST(strftime('%s', m.timestamp) AS REAL) -
+                CAST(strftime('%s', ut.timestamp) AS REAL)
+            ) BETWEEN 0 AND 3600
+            ORDER BY m.day
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [String: Double] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result[colTxt(stmt, 0)] = colDbl(stmt, 1)
+        }
+        return result
+    }
+
+    func queryKnownAccounts() throws -> [AccountInfo] {
+        let stmt = try prepare("""
+            SELECT at.account_uuid, at.email, at.org_name, at.display_name, at.auth_type
+            FROM account_timeline at
+            JOIN (SELECT account_uuid, MAX(id) as mid FROM account_timeline GROUP BY account_uuid) latest
+                ON at.id = latest.mid
+            ORDER BY latest.mid DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [AccountInfo] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(AccountInfo(
+                accountUuid: colTxt(stmt, 0),
+                email: colTxt(stmt, 1),
+                orgName: colTxt(stmt, 2),
+                displayName: colTxt(stmt, 3),
+                authType: colTxt(stmt, 4)
+            ))
+        }
+        return result
     }
 }

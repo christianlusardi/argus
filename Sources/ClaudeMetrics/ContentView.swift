@@ -23,6 +23,7 @@ enum NavSection: String, CaseIterable, Identifiable {
     case schedule = "Schedule"
     case projects = "Projects"
     case sessions = "Sessions"
+    case platform = "Platform"
 
     var id: String { rawValue }
 
@@ -34,6 +35,7 @@ enum NavSection: String, CaseIterable, Identifiable {
         case .schedule: return "clock.fill"
         case .projects: return "folder.badge.gear"
         case .sessions: return "bubble.left.and.bubble.right"
+        case .platform: return "gauge.medium"
         }
     }
 }
@@ -65,6 +67,7 @@ struct ContentView: View {
                         case .schedule: ScheduleView()
                         case .projects: ProjectsView()
                         case .sessions: SessionsView()
+                        case .platform: PlatformView()
                         }
                     }
                 }
@@ -105,7 +108,37 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 38)
-            .padding(.bottom, 20)
+            .padding(.bottom, 12)
+
+            // Account chip
+            if let acct = store.currentAccount {
+                HStack(spacing: 6) {
+                    Image(systemName: acct.isOAuth ? "person.crop.circle.fill" : "key.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(acct.isOAuth ? Color.appAccent : Color.orange)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(acct.label)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.appTextPrimary)
+                            .lineLimit(1)
+                        if !acct.subtitle.isEmpty {
+                            Text(acct.subtitle)
+                                .font(.system(size: 9))
+                                .foregroundStyle(Color.appTextTertiary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(acct.isOAuth ? Color.appAccent.opacity(0.08) : Color.orange.opacity(0.08))
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
 
             // Nav
             VStack(spacing: 2) {
@@ -154,6 +187,33 @@ struct SidebarView: View {
                 .padding(.bottom, 10)
             }
 
+            // Account filter (only shown when multiple accounts known)
+            if store.knownAccounts.count > 1 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Color.appBorder.frame(height: 1)
+                    Text("ACCOUNT")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.appTextTertiary)
+                        .tracking(0.5)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                    AccountFilterButton(label: "All Accounts", icon: "person.2.fill",
+                                        isSelected: store.accountFilter == nil) {
+                        store.accountFilter = nil
+                    }
+                    ForEach(store.knownAccounts) { acct in
+                        AccountFilterButton(
+                            label: acct.label,
+                            icon: acct.isOAuth ? "person.crop.circle" : "key.fill",
+                            isSelected: store.accountFilter == acct.accountUuid
+                        ) {
+                            store.accountFilter = acct.accountUuid
+                        }
+                    }
+                }
+                .padding(.bottom, 6)
+            }
+
             // Footer
             VStack(alignment: .leading, spacing: 0) {
                 Color.appBorder.frame(height: 1)
@@ -187,6 +247,40 @@ struct SidebarView: View {
             }
         }
         .background(Color.appSidebar)
+    }
+}
+
+struct AccountFilterButton: View {
+    let label: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .frame(width: 14)
+                    .foregroundStyle(isSelected ? Color.appAccent : Color.appTextSecondary)
+                Text(label)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? Color.appTextPrimary : Color.appTextSecondary)
+                    .lineLimit(1)
+                Spacer()
+                if isSelected {
+                    Circle().fill(Color.appAccent).frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? Color.appAccent.opacity(0.1) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
     }
 }
 

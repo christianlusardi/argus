@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import UserNotifications
 import AppKit
+import Security
 
 enum DateFilter: String, CaseIterable {
     case today      = "Today"
@@ -19,6 +20,11 @@ class MetricsStore: ObservableObject {
     @Published var alertThreshold: Double = UserDefaults.standard.double(forKey: "argusai.alertThreshold") {
         didSet { UserDefaults.standard.set(alertThreshold, forKey: "argusai.alertThreshold") }
     }
+    @Published var currentAccount: AccountInfo?
+    @Published var accountFilter: String? = nil {
+        didSet { if oldValue != accountFilter { loadData(silent: true) } }
+    }
+    @Published var knownAccounts: [AccountInfo] = []
 
     private let projectsURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".claude/projects")
@@ -102,15 +108,118 @@ class MetricsStore: ObservableObject {
         return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "jsonl" }
     }
 
+    // MARK: - Account
+
+    // Mirrors Claude Code's actual auth priority order:
+    // env ANTHROPIC_API_KEY > apiKeyHelper > Keychain API key > OAuth > fallback
+    func readCurrentAccount() -> AccountInfo? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+
+        // 1. ANTHROPIC_API_KEY env var — highest priority, overrides everything including OAuth
+        if let key = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !key.isEmpty {
+            return apiKeyAccountInfo(from: key, source: "Env")
+        }
+
+        // 2. apiKeyHelper in ~/.claude/settings.json
+        let settings = home.appendingPathComponent(".claude/settings.json")
+        if let data = try? Data(contentsOf: settings),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let helper = json["apiKeyHelper"] as? String, !helper.isEmpty {
+            return AccountInfo(
+                accountUuid: "api_key_helper_\(abs(helper.hash))",
+                email: "",
+                orgName: "",
+                displayName: "API Key (helper)",
+                authType: "api_key"
+            )
+        }
+
+        // 3. API key stored in Keychain via /config (starts with "sk-ant-")
+        if let key = readKeychainAPIKey(), !key.isEmpty {
+            return apiKeyAccountInfo(from: key, source: "Keychain")
+        }
+
+        // 4. OAuth account from ~/.claude.json
+        let claudeJson = home.appendingPathComponent(".claude.json")
+        if let data = try? Data(contentsOf: claudeJson),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let oauth = json["oauthAccount"] as? [String: Any],
+           let uuid = oauth["accountUuid"] as? String, !uuid.isEmpty {
+            return AccountInfo(
+                accountUuid: uuid,
+                email: oauth["emailAddress"] as? String ?? "",
+                orgName: oauth["organizationName"] as? String ?? "",
+                displayName: oauth["displayName"] as? String ?? "",
+                authType: "oauth"
+            )
+        }
+
+        // 5. Fallback — no auth detected
+        return AccountInfo(
+            accountUuid: "api_key_user",
+            email: "",
+            orgName: "",
+            displayName: "API Key",
+            authType: "api_key"
+        )
+    }
+
+    private func readKeychainAPIKey() -> String? {
+        for service in ["Claude Code", "Claude Code-credentials"] {
+            let query: [String: Any] = [
+                kSecClass as String:       kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecReturnData as String:  true,
+                kSecMatchLimit as String:  kSecMatchLimitOne
+            ]
+            var item: CFTypeRef?
+            if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+               let data = item as? Data,
+               let key = String(data: data, encoding: .utf8),
+               key.hasPrefix("sk-") {
+                return key
+            }
+        }
+        return nil
+    }
+
+    private func apiKeyAccountInfo(from key: String, source: String) -> AccountInfo {
+        let suffix = String(key.suffix(8))
+        // Stable UUID derived from key suffix (not reversible to the full key)
+        let uuid = "api_key_\(suffix)"
+        return AccountInfo(
+            accountUuid: uuid,
+            email: "",
+            orgName: source,
+            displayName: "API Key (…\(suffix))",
+            authType: "api_key"
+        )
+    }
+
     // MARK: - DB-backed build
 
     private func buildStatsFromDB() throws -> StatsCache {
         guard let db = db else { throw NSError(domain: "ArgusDB", code: 1, userInfo: [NSLocalizedDescriptionKey: "Database unavailable"]) }
+        let account = readCurrentAccount()
+        let currentFilter = accountFilter
+        DispatchQueue.main.async { self.currentAccount = account }
         let files = findJSONLFiles().map { url in
             (url: url, isSubagent: url.pathComponents.contains("subagents"))
         }
-        try db.ingestFiles(files)
-        return try db.buildStatsCache()
+        // One-shot: claim all historical NULL messages for the current account
+        let claimKey = "argusai.historicalClaimDone"
+        if !UserDefaults.standard.bool(forKey: claimKey), let uuid = account?.accountUuid {
+            try db.claimHistoricalMessages(for: uuid)
+            UserDefaults.standard.set(true, forKey: claimKey)
+        }
+
+        try db.ingestFiles(files, account: account)
+        db.accountFilter = currentFilter
+        let cache = try db.buildStatsCache()
+        if let accounts = cache.knownAccountsList {
+            DispatchQueue.main.async { self.knownAccounts = accounts }
+        }
+        return cache
     }
 
     // MARK: - LEGACY (unused — DB path is authoritative)
@@ -870,6 +979,148 @@ class MetricsStore: ObservableObject {
 
     var filteredDirectCost: Double {
         filteredSessions.filter { !$0.isSubagent }.reduce(0) { $0 + $1.costUSD }
+    }
+
+    // MARK: - Platform KPIs
+
+    var platformDailyTotals: [DailyTokenTotals] { filteredDailyTotals }
+
+    private var filteredDailyAccountCosts: [DailyAccountCosts] {
+        let all = stats?.dailyAccountCosts ?? []
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        switch dateFilter {
+        case .all: return all
+        case .today:
+            let start = Calendar.current.startOfDay(for: Date())
+            return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= start }
+        case .sevenDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .thirtyDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+            return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        }
+    }
+
+    var filteredAccountCosts: [AccountCostBreakdown] {
+        var totalCosts: [String: Double] = [:]
+        var totalMsgs:  [String: Int]    = [:]
+        for d in filteredDailyAccountCosts {
+            for (uuid, cost) in d.costs { totalCosts[uuid, default: 0] += cost }
+            for (uuid, msgs) in d.messages { totalMsgs[uuid, default: 0] += msgs }
+        }
+        let accounts = knownAccounts
+        return totalCosts
+            .filter { $0.value > 0 }
+            .sorted { $0.value > $1.value }
+            .compactMap { (uuid, cost) in
+                guard let acct = accounts.first(where: { $0.accountUuid == uuid }) else { return nil }
+                return AccountCostBreakdown(accountUuid: uuid, label: acct.label,
+                                           subtitle: acct.subtitle, authType: acct.authType,
+                                           costUSD: cost, messageCount: totalMsgs[uuid] ?? 0)
+            }
+    }
+
+    var platformChartData: [TokenChartPoint] {
+        let daily = platformDailyTotals
+        guard daily.count > 1 else { return [] }
+
+        let dayFmt = DateFormatter(); dayFmt.dateFormat = "yyyy-MM-dd"
+        let labelFmt = DateFormatter()
+
+        if daily.count <= 14 {
+            labelFmt.dateFormat = "MMM d"
+            return daily.map { d in
+                let date = dayFmt.date(from: d.date) ?? Date()
+                return TokenChartPoint(label: labelFmt.string(from: date),
+                                       inputTokens: d.inputTokens, outputTokens: d.outputTokens,
+                                       costUSD: d.estimatedCostUSD)
+            }
+        } else if daily.count <= 90 {
+            // Weekly: group by ISO week, label = first day of group
+            labelFmt.dateFormat = "MMM d"
+            let isoCal = Calendar(identifier: .iso8601)
+            var weekDict: [String: (label: String, input: Int, output: Int, cost: Double)] = [:]
+            for d in daily {
+                guard let date = dayFmt.date(from: d.date) else { continue }
+                let y = isoCal.component(.yearForWeekOfYear, from: date)
+                let w = isoCal.component(.weekOfYear, from: date)
+                let key = String(format: "%04d-W%02d", y, w)
+                if let ex = weekDict[key] {
+                    weekDict[key] = (ex.label, ex.input + d.inputTokens, ex.output + d.outputTokens, ex.cost + d.estimatedCostUSD)
+                } else {
+                    weekDict[key] = (labelFmt.string(from: date), d.inputTokens, d.outputTokens, d.estimatedCostUSD)
+                }
+            }
+            return weekDict.sorted { $0.key < $1.key }.map { _, v in
+                TokenChartPoint(label: v.label, inputTokens: v.input, outputTokens: v.output, costUSD: v.cost)
+            }
+        } else {
+            // Monthly: group by "yyyy-MM"
+            var monthDict: [String: (input: Int, output: Int, cost: Double)] = [:]
+            for d in daily {
+                let key = String(d.date.prefix(7))
+                let ex = monthDict[key] ?? (0, 0, 0)
+                monthDict[key] = (ex.0 + d.inputTokens, ex.1 + d.outputTokens, ex.2 + d.estimatedCostUSD)
+            }
+            let years = Set(monthDict.keys.map { String($0.prefix(4)) })
+            labelFmt.dateFormat = years.count > 1 ? "MMM ''yy" : "MMM"
+            return monthDict.sorted { $0.key < $1.key }.map { key, val in
+                let parts = key.split(separator: "-")
+                var date = Date()
+                if parts.count == 2, let y = Int(parts[0]), let m = Int(parts[1]) {
+                    var c = DateComponents(); c.year = y; c.month = m; c.day = 1
+                    date = Calendar.current.date(from: c) ?? Date()
+                }
+                return TokenChartPoint(label: labelFmt.string(from: date),
+                                       inputTokens: val.0, outputTokens: val.1, costUSD: val.2)
+            }
+        }
+    }
+
+    // Total context per request: input + all cache tokens (more stable than bare input_tokens
+    // which drops to near-zero in cache-heavy sessions)
+    var filteredAvgContextTokensPerRequest: Double {
+        let msgs = filteredTotalMessages
+        guard msgs > 0 else { return 0 }
+        return Double(filteredInputTokens + filteredCacheTokens) / Double(msgs)
+    }
+
+    var filteredAvgOutputTokensPerRequest: Double {
+        let msgs = filteredTotalMessages
+        guard msgs > 0 else { return 0 }
+        return Double(filteredOutputTokens) / Double(msgs)
+    }
+
+    var filteredAvgCostPerRequest: Double {
+        let msgs = filteredTotalMessages
+        guard msgs > 0 else { return 0 }
+        return filteredTotalCost / Double(msgs)
+    }
+
+    var filteredDailyResponseTimes: [(date: String, avgSec: Double)] {
+        let all = stats?.dailyAvgResponseTimeSec ?? [:]
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let filtered: [String: Double]
+        switch dateFilter {
+        case .all: filtered = all
+        case .today:
+            let start = Calendar.current.startOfDay(for: Date())
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= start }
+        case .sevenDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        case .thirtyDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        }
+        return filtered.map { (date: $0.key, avgSec: $0.value) }.sorted { $0.date < $1.date }
+    }
+
+    var filteredAvgResponseTimeSec: Double? {
+        let vals = filteredDailyResponseTimes.map { $0.avgSec }
+        guard !vals.isEmpty else { return nil }
+        return vals.reduce(0, +) / Double(vals.count)
     }
 
     // MARK: - Alerts

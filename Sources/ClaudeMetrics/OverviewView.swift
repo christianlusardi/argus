@@ -148,6 +148,46 @@ struct OverviewView: View {
                     }
                 }
 
+                // Account breakdown (only when multiple accounts have tracked data)
+                if let accountCosts = store.stats?.accountCosts, accountCosts.count > 1 {
+                    let totalAccountCost = accountCosts.reduce(0) { $0 + $1.costUSD }
+                    SectionCard(title: "By Account", icon: "person.crop.circle.badge.clock") {
+                        VStack(spacing: 10) {
+                            ForEach(accountCosts) { acct in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(acct.label)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(Color.appTextPrimary)
+                                        if !acct.subtitle.isEmpty {
+                                            Text(acct.subtitle)
+                                                .font(.system(size: 10))
+                                                .foregroundStyle(Color.appTextTertiary)
+                                        }
+                                    }
+                                    Spacer()
+                                    Text(formatCost(acct.costUSD))
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Color.appTextPrimary)
+                                }
+                            }
+                            if totalAccountCost > 0 {
+                                GeometryReader { geo in
+                                    HStack(spacing: 2) {
+                                        ForEach(Array(accountCosts.enumerated()), id: \.offset) { idx, acct in
+                                            let colors: [Color] = [Color.appAccent, .orange, .purple, .green]
+                                            RoundedRectangle(cornerRadius: 3)
+                                                .fill(colors[idx % colors.count])
+                                                .frame(width: max(4, geo.size.width * CGFloat(acct.costUSD / totalAccountCost)))
+                                        }
+                                    }
+                                }
+                                .frame(height: 8)
+                            }
+                        }
+                    }
+                }
+
                 // Agent type
                 let subCost  = store.filteredSubagentCost
                 let dirCost  = store.filteredDirectCost
