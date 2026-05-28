@@ -35,6 +35,15 @@ struct PlatformView: View {
                         value: formatPerRequestCost(store.filteredAvgCostPerRequest),
                         detail: "est. per message"
                     )
+                    if let avg = store.filteredAvgRating {
+                        MetricCard(
+                            icon: "star.fill",
+                            iconColor: .appGold,
+                            label: "Avg Quality",
+                            value: String(format: "%.1f ★", avg),
+                            detail: "rated via /rate"
+                        )
+                    }
                 }
 
                 // Row 2: token cards

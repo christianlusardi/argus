@@ -111,6 +111,7 @@ struct SessionSummary: Codable, Identifiable {
     let costUSD: Double
     let isSubagent: Bool
     let topModel: String
+    let rating: Int?   // 1-5 from /rate skill, nil if not yet rated
 }
 
 struct StatsCache: Codable {

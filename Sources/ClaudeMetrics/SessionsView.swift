@@ -35,6 +35,8 @@ struct SessionsView: View {
                                     .frame(width: 70, alignment: .trailing)
                                 Text("MODEL")
                                     .frame(width: 90, alignment: .leading)
+                                Text("RATING")
+                                    .frame(width: 60, alignment: .center)
                             }
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(Color.appTextTertiary)
@@ -118,7 +120,16 @@ struct SessionRow: View {
                 }
             }
             .frame(width: 90, alignment: .leading)
+
+            Text(ratingStars(session.rating))
+                .font(.system(size: 10))
+                .frame(width: 60, alignment: .center)
         }
         .padding(.vertical, 8)
     }
+}
+
+private func ratingStars(_ rating: Int?) -> String {
+    guard let r = rating, r >= 1, r <= 5 else { return "·" }
+    return String(repeating: "★", count: r) + String(repeating: "☆", count: 5 - r)
 }

@@ -214,6 +214,9 @@ class MetricsStore: ObservableObject {
         }
 
         try db.ingestFiles(files, account: account)
+        let feedbackURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/argusai_feedback.jsonl")
+        try? db.ingestFeedback(at: feedbackURL)
         db.accountFilter = currentFilter
         let cache = try db.buildStatsCache()
         if let accounts = cache.knownAccountsList {
@@ -847,6 +850,12 @@ class MetricsStore: ObservableObject {
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.firstDay) ?? .distantPast) >= cut }
         }
+    }
+
+    var filteredAvgRating: Double? {
+        let ratings = filteredSessions.compactMap { $0.rating }
+        guard !ratings.isEmpty else { return nil }
+        return Double(ratings.reduce(0, +)) / Double(ratings.count)
     }
 
     // MARK: - Menu bar

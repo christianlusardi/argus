@@ -89,6 +89,12 @@ final class ArgusDB {
             PRIMARY KEY (file_path, line_num)
         );
         CREATE INDEX IF NOT EXISTS idx_ut_session_ts ON user_turns(session_id, timestamp);
+        CREATE TABLE IF NOT EXISTS feedback (
+            session_id  TEXT PRIMARY KEY,
+            timestamp   TEXT NOT NULL DEFAULT '',
+            rating      INTEGER NOT NULL DEFAULT 0,
+            comment     TEXT NOT NULL DEFAULT ''
+        );
     """
 
     // MARK: - Low-level helpers
@@ -343,6 +349,29 @@ final class ArgusDB {
         sqlite3_finalize(fileUpsert)
         sqlite3_finalize(utInsert)
 
+        try execSQL("COMMIT")
+    }
+
+    // MARK: - Feedback ingestion
+
+    func ingestFeedback(at url: URL) throws {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else { return }
+        let stmt = try prepare(
+            "INSERT OR REPLACE INTO feedback(session_id,timestamp,rating,comment) VALUES(?,?,?,?)")
+        defer { sqlite3_finalize(stmt) }
+        try execSQL("BEGIN")
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  obj["type"] as? String == "feedback",
+                  let sid = obj["sessionId"] as? String, !sid.isEmpty,
+                  let rating = obj["rating"] as? Int, rating >= 1, rating <= 5 else { continue }
+            let ts      = obj["timestamp"] as? String ?? ""
+            let comment = obj["comment"]   as? String ?? ""
+            bindTxt(stmt, 1, sid);    bindTxt(stmt, 2, ts)
+            bindInt(stmt, 3, rating); bindTxt(stmt, 4, comment)
+            sqlite3_step(stmt); sqlite3_reset(stmt)
+        }
         try execSQL("COMMIT")
     }
 
@@ -629,13 +658,17 @@ final class ArgusDB {
             SELECT m.session_id, m.project, MIN(m.day), COUNT(*),
                 SUM(m.output_tokens), SUM(m.cost_usd), MAX(m.is_subagent),
                 (SELECT model FROM messages WHERE session_id = m.session_id
-                 GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1)
-            FROM messages m WHERE m.day != '' \(af("m"))
+                 GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1),
+                f.rating
+            FROM messages m
+            LEFT JOIN feedback f ON f.session_id = m.session_id
+            WHERE m.day != '' \(af("m"))
             GROUP BY m.session_id ORDER BY SUM(m.cost_usd) DESC
         """)
         defer { sqlite3_finalize(stmt) }
         var result: [SessionSummary] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
+            let rating: Int? = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : colInt(stmt, 8)
             result.append(SessionSummary(
                 sessionId: colTxt(stmt, 0),
                 project: colTxt(stmt, 1),
@@ -644,7 +677,8 @@ final class ArgusDB {
                 outputTokens: colInt(stmt, 4),
                 costUSD: colDbl(stmt, 5),
                 isSubagent: colInt(stmt, 6) == 1,
-                topModel: colTxt(stmt, 7)
+                topModel: colTxt(stmt, 7),
+                rating: rating
             ))
         }
         return result
