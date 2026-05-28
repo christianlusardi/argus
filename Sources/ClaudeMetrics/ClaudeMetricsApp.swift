@@ -26,13 +26,23 @@ struct ClaudeMetricsApp: App {
                     store.exportCSV()
                 }
                 .keyboardShortcut("e", modifiers: .command)
+                Button("Export JSON") {
+                    store.exportJSON()
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
             }
         }
 
         MenuBarExtra {
             MenuBarView().environmentObject(store)
         } label: {
-            Label(store.menuBarLabel, systemImage: "waveform.circle.fill")
+            HStack(spacing: 4) {
+                Image(systemName: store.hasRecentActivity ? "waveform.circle.fill" : "waveform.circle")
+                Text(store.menuBarLabel)
+                if store.hasRecentActivity {
+                    Circle().fill(Color.green).frame(width: 6, height: 6)
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }

@@ -34,7 +34,7 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | File | Role |
 |---|---|
-| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, …) |
+| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, `DailyAccountCosts`, …) |
 | `Database.swift` | `ArgusDB` — SQLite ingestion + all KPI queries; owns `~/.claude/argusai.db` |
 | `MetricsStore.swift` | `ObservableObject` — calls `ArgusDB`, owns all state and computed properties |
 | `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum) |
@@ -44,6 +44,7 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 | `ScheduleView.swift` | Hourly distribution, top hours, work-hour bars |
 | `ProjectsView.swift` | Per-project cost/token table and chart |
 | `SessionsView.swift` | Per-session table (id, project, date, msgs, output, cost, model, sub badge) |
+| `PlatformView.swift` | Platform KPIs tab (operational metrics, response time, cost per user) |
 | `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, …) |
 | `Theme.swift` | Color palette, `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
 | `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
@@ -57,6 +58,7 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 - JSONL files are the source of truth (written by Claude Code, never modified by ArgusAI).
 - `ArgusDB` tracks `lines_processed` per file in the `ingested_files` table — only new lines are read on each 3s refresh.
 - All KPI queries run as SQL against indexed tables; **never re-parse JSONL in Swift**.
+- Ingestion uses `INSERT OR REPLACE` (not `INSERT OR IGNORE`) so that corrected fields (e.g. `web_searches`) are always up to date on re-ingest.
 
 ### Adding a new data point
 
@@ -70,22 +72,63 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | Table | Key columns |
 |---|---|
-| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` |
+| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` · `account_uuid` |
 | `sessions` | `session_id` PK · `project` · `is_subagent` |
 | `tool_events` | `(file_path, line_num)` PK · `session_id` · `day` · `count` |
+| `user_turns` | `(file_path, line_num)` PK · `session_id` · `timestamp` · `day` — human-typed messages, used for response time |
 | `ingested_files` | `path` PK · `lines_processed` |
+| `account_timeline` | `id` PK · `account_uuid` · `email` · `org_name` · `display_name` · `auth_type` · `recorded_at` |
 
 Relevant JSONL fields ingested (on `type == "assistant"` lines):
 - `message.usage.{input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}`
-- `message.usage.server_tool_use.web_search_requests`
+- `message.content[].{type, name}` — tool_use blocks; `name == "WebSearch"` counted as `web_searches`
 - `message.model`
 - `sessionId`, `timestamp`, `cwd`
 
+> **Note on web searches:** `message.usage.server_tool_use.web_search_requests` is always 0 in Claude Code JSONL. Actual searches are `tool_use` content blocks with `name == "WebSearch"`. The ingestion loop counts those instead.
+
+Relevant JSONL fields ingested (on `type == "user"` lines):
+- Human-typed turns (content blocks with `type == "text"`, excluding `tool_result`) → `user_turns` table for response time calculation.
+
+## Multi-account support
+
+ArgusAI tracks **which account/key is active** on every 3-second refresh and associates each ingested message with it via `messages.account_uuid`.
+
+### Auth detection priority (mirrors Claude Code)
+1. `ANTHROPIC_API_KEY` env var → `api_key_<last8chars>`
+2. `apiKeyHelper` in `~/.claude/settings.json` → `api_key_helper_<hash>`
+3. Keychain service `"Claude Code"` / `"Claude Code-credentials"` (API key stored via `/config`) → `api_key_<last8chars>`
+4. OAuth from `~/.claude.json` → `oauthAccount.accountUuid`
+5. Fallback → `api_key_user`
+
+API key and OAuth are **separate entity types**. A user with 3 API keys + 2 OAuth accounts produces 5 distinct identities in the DB.
+
+### account_timeline
+Every time the active account changes, a new row is written to `account_timeline`. `ArgusDB.recordAccount()` compares the last UUID and inserts only on change.
+
+### Historical claim (one-shot)
+On first run with the new code, `ArgusDB.claimHistoricalMessages(for:)` runs `UPDATE messages SET account_uuid = ? WHERE account_uuid IS NULL` for the current account. Guarded by `argusai.historicalClaimDone` in UserDefaults — never runs again.
+
+### Account filter
+`MetricsStore.accountFilter: String?` (nil = all) is set by the sidebar picker. Before `buildStatsCache()`, `db.accountFilter` is set — all SQL queries inject `AND account_uuid = '...'` via the `af` / `af(_ alias:)` helpers in `ArgusDB`. Changing `accountFilter` triggers a silent reload.
+
+The sidebar "ACCOUNT" section is only shown when `knownAccounts.count > 1`.
+
+### Project filter
+`MetricsStore.projectFilter: String?` (nil = all) is set by the sidebar PROJECT picker. Before `buildStatsCache()`, `db.projectFilter` is set — all SQL queries inject `AND project = '...'` via the same `af` / `af(_ alias:)` helpers (which now combine both account and project clauses). Changing `projectFilter` triggers a silent reload.
+
+`ArgusDB.queryKnownProjects()` fetches distinct project names using only the account filter (not the project filter) so the PROJECT picker always lists all available projects. `StatsCache.knownProjectsList: [String]?` carries the list; `MetricsStore.knownProjects` is updated on every refresh.
+
+The sidebar "PROJECT" section is only shown when `knownProjects.count > 1`.
+
 ## Date filtering
 
-`MetricsStore.dateFilter: DateFilter` (`.today` / `.sevenDays` / `.thirtyDays` / `.all`) drives all views.
+`MetricsStore.dateFilter: DateFilter` (`.today` / `.sevenDays` / `.thirtyDays` / `.all` / `.custom`) drives all views.
 
 **Pattern:** every KPI has a `filteredXxx` computed property in `MetricsStore` that slices the relevant `[DailyXxx]` array from `StatsCache` by date, then aggregates. Never read raw all-time stats directly in views; always use the `filtered*` variant.
+
+### Custom date range
+`.custom` is set when the user picks dates via the "Da / Al" `DatePicker` rows in the sidebar. `MetricsStore` owns `customStartDate` and `customEndDate` (date-only, no time). All 11 filter switch statements handle `.custom` as `>= startOfDay(from) && < startOfDay(to+1)`. Week-over-week switches return `[]` for `.custom` (no delta badge). The segmented picker uses `DateFilter.presets` (not `allCases`) so `.custom` never appears as a segment.
 
 ## Window & UI style
 
@@ -93,33 +136,64 @@ Relevant JSONL fields ingested (on `type == "assistant"` lines):
 - Sidebar top padding is **38pt** to clear the traffic light buttons
 - Cards use **macOS 26 Liquid Glass**: `.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))` — use this for any new card component, never `Color.appSurface` + clipShape
 
-When adding a new filter-aware property, add all four cases to the switch. `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`.
+When adding a new filter-aware property, add all **five** cases to the switch (`.today`, `.sevenDays`, `.thirtyDays`, `.all`, `.custom`). `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`; `.custom` uses `customStartDate`/`customEndDate` from MetricsStore.
 
 Key per-day structures stored in `StatsCache`:
 | Field | Used for |
 |---|---|
 | `dailyTotals: [DailyTokenTotals]` | Overview KPIs (cost, tokens, cache, web searches) |
 | `dailyModelBreakdown: [DailyModelBreakdown]` | Models tab |
-| `dailyHourCounts: [String: [String: Int]]` | Schedule tab hourly chart |
+| `dailyHourCounts: [String: [String: Int]]` | Schedule tab hourly message chart |
+| `dailyHourCosts: [String: [String: Double]]?` | Schedule tab — Cost per Hour chart |
 | `dailyProjectCosts: [DailyProjectCosts]` | Projects tab |
 | `dailyWorkHours: [DailyWorkHours]` | Schedule work-hour bars |
 | `dailyActivity: [DailyActivity]` | Activity chart, day-of-week, streak |
+| `dailyAccountCosts: [DailyAccountCosts]` | Platform tab — Cost per User (filter-aware) |
 | `sessions: [SessionSummary]?` | Sessions tab |
 | `subagentCostUSD: Double?` | Agent Type breakdown |
 | `directCostUSD: Double?` | Agent Type breakdown |
+| `dailyAvgResponseTimeSec: [String: Double]?` | Platform tab — Response Time chart |
+| `latestMessageTimestamp: String?` | Menu bar live-activity indicator |
+
+## Adaptive chart aggregation
+
+`MetricsStore.platformChartData: [TokenChartPoint]` applies adaptive aggregation based on the number of daily data points in the current filter window. Each `TokenChartPoint` carries `label`, `inputTokens`, `outputTokens`, and `costUSD` so both the Token Trend and Daily Cost charts share the same aggregated data without duplication.
+
+| Daily data points | Aggregation | Label format |
+|---|---|---|
+| ≤ 14 | Daily (as-is) | `MMM d` |
+| 15 – 90 | Weekly (ISO week, first day label) | `MMM d` |
+| > 90 | Monthly | `MMM` / `MMM 'yy` (multi-year) |
 
 ## Features
 
 | Feature | Where |
 |---|---|
-| **Sessions tab** | `SessionsView.swift` — per-session table; `filteredSessions` in `MetricsStore` |
-| **Menu bar extra** | `ClaudeMetricsApp.swift` — `MenuBarExtra` with today cost+msgs, week cost, alert dot |
-| **Delta badges** | `DeltaBadge` in `Components.swift`; `costDeltaPct`/`messagesDeltaPct` in `MetricsStore` (week-over-week) |
+| **Platform tab** | `PlatformView.swift` — Total Cost, Total Requests, Avg Cost/Req, Avg Context/Req, Avg Output/Req, Token Trend, Daily Cost, Response Time, Cost per User |
+| **Response Time** | `user_turns` table + correlated subquery in `queryDailyAvgResponseTime()`; measures human message → first assistant token |
+| **Sessions tab** | `SessionsView.swift` — per-session table with search field + sortable columns (DATE/MSGS/OUTPUT/COST); `visibleSessions` paginates via `sessionDisplayLimit` (default 100); "Load more" button appears when there are more results |
+| **Menu bar extra** | `ClaudeMetricsApp.swift` — `MenuBarExtra` with today cost+msgs, week cost, alert dot; live-activity indicator (green dot + filled waveform icon) when a message was ingested in the last 60 seconds |
+| **Delta badges** | `DeltaBadge` in `Components.swift`; `costDeltaPct`/`messagesDeltaPct` in `MetricsStore` (week-over-week); no delta for `.custom` filter |
 | **Daily limit alert** | `alertThreshold` (`@Published`, persisted in UserDefaults); `UNNotificationCenter` fires once per day when today's cost ≥ threshold |
+| **Weekly summary notification** | `scheduleWeeklySummaryIfNeeded()` — fires every Monday 09:00 with last-7-days cost + message count; guarded by week key in UserDefaults |
 | **Forecast** | `burnRatePerDay`, `currentMonthCost`, `daysLeftInMonth`, `projectedMonthCost` in `MetricsStore` |
 | **Agent Type breakdown** | `filteredSubagentCost`, `filteredDirectCost` in `MetricsStore`; two-segment bar in `OverviewView` |
-| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E shortcut |
-| **Daily Cost chart** | `OverviewDailyCostChart` in `OverviewView` — golden area+line chart |
+| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E |
+| **JSON export** | `exportJSON()` in `MetricsStore` — pretty-printed JSON of all sessions; Cmd+Shift+E |
+| **Daily Cost chart** | `OverviewDailyCostChart` in `OverviewView` (golden area+line); also in `PlatformView` as bar chart with adaptive aggregation |
+| **Multi-account tracking** | `account_timeline` table + `messages.account_uuid`; `readCurrentAccount()` in `MetricsStore`; account chip in sidebar |
+| **Account filter** | `MetricsStore.accountFilter` → `ArgusDB.accountFilter` → SQL `AND account_uuid = '...'` on all queries; sidebar picker (hidden if single account) |
+| **Account cost breakdown** | `queryAccountCosts()` → `StatsCache.accountCosts`; multi-segment bar in `OverviewView` "By Account" card |
+| **Filtered Cost per User** | `MetricsStore.filteredAccountCosts` — aggregates `DailyAccountCosts` by date range; shows cost + message count per account |
+| **Best Streak** | `longestStreak` in `MetricsStore` — longest ever consecutive-day run; shown as "Best Streak" card (trophy) in `ActivityView` |
+| **Output/Context Ratio** | `filteredEfficiencyTrend` in `MetricsStore` — daily ratio of output tokens to total context tokens; line+area chart in `ActivityView` |
+| **Cost per Hour** | `queryDailyHourCosts()` → `dailyHourCosts` → `filteredHourlyCosts`; gold bar chart "Cost per Hour of Day" in `ScheduleView` |
+| **Chart tooltips** | `chartXSelection` + overlay on `ActivityBarChart` (date → msg count) and `HourlyBarChart` (hour → msg count) |
+| **Sortable Projects table** | `ProjectSortKey` enum + `sorted` computed var in `ProjectTable`; click any column header (PROJECT/MSG/OUTPUT/COST/WEB/% AI) to sort |
+| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar; selecting a date activates `.custom` filter; clicking a preset deactivates it |
+
+### Platform tab — Cost per User
+Uses `filteredAccountCosts: [AccountCostBreakdown]` computed from `DailyAccountCosts` (per-day, per-account cost + message counts). This ensures the "Today" filter shows only today's cost, not the all-time total. `AccountCostBreakdown` carries both `costUSD` and `messageCount`.
 
 ### Menu bar label
 `store.menuBarLabel` returns today's cost formatted as `"$X.XX"`. Updated on every refresh.

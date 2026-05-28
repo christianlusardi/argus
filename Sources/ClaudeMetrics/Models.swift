@@ -58,6 +58,13 @@ struct ProjectStats: Codable, Identifiable {
     let sessionCount: Int
     let messageCount: Int
     let estimatedCostUSD: Double
+    let aiLinesWritten: Int    // lines written by AI via Write/Edit/MultiEdit tool_use
+    let gitLinesAdded: Int     // total lines added in git history (all-time)
+
+    var aiCodePct: Double {
+        guard gitLinesAdded > 0 else { return 0 }
+        return min(1.0, Double(aiLinesWritten) / Double(gitLinesAdded))
+    }
 }
 
 struct DailyWorkHours: Codable, Identifiable {
@@ -82,6 +89,13 @@ struct DailyProjectCosts: Codable, Identifiable {
     let webSearches: [String: Int]
 }
 
+struct DailyAccountCosts: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let costs:    [String: Double]  // accountUuid → cost
+    let messages: [String: Int]     // accountUuid → message count
+}
+
 struct DailyTokenTotals: Codable, Identifiable {
     var id: String { date }
     let date: String
@@ -104,6 +118,7 @@ struct SessionSummary: Codable, Identifiable {
     let costUSD: Double
     let isSubagent: Bool
     let topModel: String
+    let rating: Int?   // 1-5 from /rate skill, nil if not yet rated
 }
 
 struct StatsCache: Codable {
@@ -132,6 +147,44 @@ struct StatsCache: Codable {
     let sessions: [SessionSummary]?
     let subagentCostUSD: Double?
     let directCostUSD: Double?
+    let accountCosts: [AccountCostBreakdown]?
+    let knownAccountsList: [AccountInfo]?
+    let knownProjectsList: [String]?
+    let dailyAvgResponseTimeSec: [String: Double]?
+    let dailyAccountCosts: [DailyAccountCosts]?
+    let dailyHourCosts: [String: [String: Double]]?   // day → hour_str → cost_usd
+    let latestMessageTimestamp: String?               // ISO8601 timestamp of most recent message
+}
+
+struct AccountInfo: Equatable, Codable, Identifiable {
+    var id: String { accountUuid }
+    let accountUuid: String
+    let email: String
+    let orgName: String
+    let displayName: String
+    let authType: String   // "oauth" | "api_key"
+
+    var isOAuth: Bool { authType == "oauth" }
+    var label: String { isOAuth ? (displayName.isEmpty ? email : displayName) : "API Key" }
+    var subtitle: String { isOAuth ? orgName : "No OAuth account" }
+}
+
+struct AccountCostBreakdown: Codable, Identifiable {
+    var id: String { accountUuid }
+    let accountUuid: String
+    let label: String
+    let subtitle: String
+    let authType: String
+    let costUSD: Double
+    let messageCount: Int
+}
+
+struct TokenChartPoint: Identifiable {
+    var id: String { label }
+    let label: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let costUSD: Double
 }
 
 struct ModelPricingTable {

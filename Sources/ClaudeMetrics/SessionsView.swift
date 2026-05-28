@@ -3,49 +3,114 @@ import SwiftUI
 struct SessionsView: View {
     @EnvironmentObject var store: MetricsStore
 
+    @State private var sortKey: SessionSortKey = .date
+    @State private var sortAsc: Bool = false
+
+    enum SessionSortKey { case date, messages, output, cost }
+
+    var sortedSessions: [SessionSummary] {
+        let base = store.visibleSessions
+        switch sortKey {
+        case .date:     return sortAsc ? base : base.reversed()
+        case .messages: return base.sorted { sortAsc ? $0.messageCount < $1.messageCount : $0.messageCount > $1.messageCount }
+        case .output:   return base.sorted { sortAsc ? $0.outputTokens < $1.outputTokens : $0.outputTokens > $1.outputTokens }
+        case .cost:     return base.sorted { sortAsc ? $0.costUSD < $1.costUSD : $0.costUSD > $1.costUSD }
+        }
+    }
+
+    func sortHeader(_ label: String, key: SessionSortKey, width: CGFloat, align: Alignment = .trailing) -> some View {
+        Button {
+            if sortKey == key { sortAsc.toggle() } else { sortKey = key; sortAsc = false }
+        } label: {
+            HStack(spacing: 2) {
+                if align == .leading { Text(label); Spacer() }
+                if sortKey == key {
+                    Image(systemName: sortAsc ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8))
+                }
+                if align == .trailing { Spacer(); Text(label) }
+            }
+            .frame(width: width, alignment: align)
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(sortKey == key ? Color.appAccent : Color.appTextTertiary)
+        .tracking(0.5)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 PageHeader(
                     title: "Sessions",
-                    subtitle: "\(store.filteredSessions.count) sessions in selected period"
+                    subtitle: "\(store.totalFilteredSessionCount) sessions in selected period"
                 )
 
                 SectionCard(title: "All Sessions", icon: "bubble.left.and.bubble.right") {
-                    if store.filteredSessions.isEmpty {
+                    TextField("Search by project or session ID…", text: $store.sessionSearchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.appTextPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.appSurface.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7)
+                                .stroke(Color.appBorder, lineWidth: 1)
+                        )
+                        .padding(.bottom, 12)
+
+                    if store.totalFilteredSessionCount == 0 {
                         Text("No sessions in selected period")
                             .font(.system(size: 13))
                             .foregroundStyle(Color.appTextSecondary)
                             .padding(.vertical, 8)
                     } else {
                         VStack(spacing: 0) {
-                            // Header row
                             HStack(spacing: 8) {
                                 Text("SESSION")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .tracking(0.5)
                                     .frame(width: 80, alignment: .leading)
                                 Text("PROJECT")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .tracking(0.5)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                Text("DATE")
-                                    .frame(width: 90, alignment: .leading)
-                                Text("MSGS")
-                                    .frame(width: 50, alignment: .trailing)
-                                Text("OUTPUT")
-                                    .frame(width: 70, alignment: .trailing)
-                                Text("COST")
-                                    .frame(width: 70, alignment: .trailing)
+                                sortHeader("DATE", key: .date, width: 90, align: .leading)
+                                sortHeader("MSGS", key: .messages, width: 50, align: .trailing)
+                                sortHeader("OUTPUT", key: .output, width: 70, align: .trailing)
+                                sortHeader("COST", key: .cost, width: 70, align: .trailing)
                                 Text("MODEL")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .tracking(0.5)
                                     .frame(width: 90, alignment: .leading)
+                                Text("RATING")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .tracking(0.5)
+                                    .frame(width: 60, alignment: .center)
                             }
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Color.appTextTertiary)
-                            .tracking(0.5)
                             .padding(.bottom, 8)
 
                             Color.appBorder.frame(height: 1)
 
-                            ForEach(store.filteredSessions) { session in
+                            ForEach(sortedSessions) { session in
                                 SessionRow(session: session)
                                 Color.appBorder.frame(height: 1).opacity(0.5)
+                            }
+
+                            if store.visibleSessions.count < store.totalFilteredSessionCount {
+                                Button("Load \(min(100, store.totalFilteredSessionCount - store.visibleSessions.count)) more sessions") {
+                                    store.sessionDisplayLimit += 100
+                                }
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.appAccent)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity)
                             }
                         }
                     }
@@ -118,7 +183,16 @@ struct SessionRow: View {
                 }
             }
             .frame(width: 90, alignment: .leading)
+
+            Text(ratingStars(session.rating))
+                .font(.system(size: 10))
+                .frame(width: 60, alignment: .center)
         }
         .padding(.vertical, 8)
     }
+}
+
+private func ratingStars(_ rating: Int?) -> String {
+    guard let r = rating, r >= 1, r <= 5 else { return "·" }
+    return String(repeating: "★", count: r) + String(repeating: "☆", count: 5 - r)
 }

@@ -3,10 +3,13 @@ set -e
 
 APP="ArgusAI.app"
 BUNDLE="$APP/Contents/MacOS"
+RESOURCES="$APP/Contents/Resources"
 SDK=$(xcrun --sdk macosx --show-sdk-path)
 
 echo "Building ArgusAI..."
 mkdir -p "$BUNDLE"
+mkdir -p "$RESOURCES"
+cp Resources/Argus.icns "$RESOURCES/Argus.icns"
 
 # Create Info.plist
 mkdir -p "$APP/Contents"
@@ -29,6 +32,8 @@ cat > "$APP/Contents/Info.plist" << 'EOF'
     <string>ArgusAI</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>Argus</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>
@@ -57,6 +62,7 @@ SOURCES=(
     Sources/ClaudeMetrics/ScheduleView.swift
     Sources/ClaudeMetrics/ProjectsView.swift
     Sources/ClaudeMetrics/SessionsView.swift
+    Sources/ClaudeMetrics/PlatformView.swift
     Sources/ClaudeMetrics/ClaudeMetricsApp.swift
 )
 
@@ -72,6 +78,7 @@ swiftc \
     -framework AppKit \
     -framework Foundation \
     -framework Combine \
+    -framework Security \
     -I Sources/CSQLite \
     -lsqlite3 \
     -Onone \

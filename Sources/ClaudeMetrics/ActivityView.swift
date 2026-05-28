@@ -44,6 +44,13 @@ struct ActivityView: View {
                         value: "\(store.currentStreak)",
                         detail: "consecutive days"
                     )
+                    MetricCard(
+                        icon: "trophy.fill",
+                        iconColor: .appGold,
+                        label: "Best Streak",
+                        value: "\(store.longestStreak)",
+                        detail: "consecutive days"
+                    )
                 }
 
                 if store.filteredActivity.count > 1 {
@@ -54,6 +61,13 @@ struct ActivityView: View {
 
                     SectionCard(title: "Tool Calls per Day", icon: "hammer") {
                         ToolCallChart()
+                            .frame(height: 140)
+                    }
+                }
+
+                if store.filteredEfficiencyTrend.count > 1 {
+                    SectionCard(title: "Output / Context Ratio", icon: "arrow.up.right.circle") {
+                        EfficiencyTrendChart()
                             .frame(height: 140)
                     }
                 }
@@ -81,8 +95,19 @@ struct ActivityView: View {
 
 struct ActivityBarChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedDate: Date? = nil
+
+    private let tooltipFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
 
     var maxVal: Int { store.filteredActivity.map(\.messageCount).max() ?? 1 }
+
+    private func closestItem(to date: Date) -> DailyActivity? {
+        store.filteredActivity.min(by: {
+            abs($0.dateValue.timeIntervalSince(date)) < abs($1.dateValue.timeIntervalSince(date))
+        })
+    }
 
     var body: some View {
         Chart(store.filteredActivity) { item in
@@ -97,6 +122,7 @@ struct ActivityBarChart: View {
             )
             .cornerRadius(3)
         }
+        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 8)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
@@ -111,6 +137,23 @@ struct ActivityBarChart: View {
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let sel = selectedDate, let item = closestItem(to: sel) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tooltipFmt.string(from: item.dateValue))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.appTextPrimary)
+                        Text("\(item.messageCount) msgs")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    .position(x: min(max(40, (proxy.position(forX: sel) ?? 0) + geo.frame(in: .local).minX), geo.size.width - 40), y: 20)
+                }
+            }
+        }
     }
 }
 
@@ -137,6 +180,45 @@ struct ToolCallChart: View {
             AxisMarks { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
                 AxisValueLabel().foregroundStyle(Color.appTextSecondary).font(.system(size: 10))
+            }
+        }
+        .chartPlotStyle { $0.background(Color.clear) }
+    }
+}
+
+struct EfficiencyTrendChart: View {
+    @EnvironmentObject var store: MetricsStore
+
+    private let fmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+
+    var body: some View {
+        Chart(store.filteredEfficiencyTrend, id: \.date) { item in
+            let date = fmt.date(from: item.date) ?? Date()
+            LineMark(x: .value("Date", date, unit: .day), y: .value("Ratio", item.ratio))
+                .foregroundStyle(Color.modelSonnet)
+                .interpolationMethod(.catmullRom)
+            AreaMark(x: .value("Date", date, unit: .day), y: .value("Ratio", item.ratio))
+                .foregroundStyle(Color.modelSonnet.opacity(0.15))
+                .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                    .foregroundStyle(Color.appTextSecondary).font(.system(size: 10))
+            }
+        }
+        .chartYAxis {
+            AxisMarks { v in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
+                if let val = v.as(Double.self) {
+                    AxisValueLabel {
+                        Text(String(format: "%.2f", val))
+                            .font(.system(size: 10)).foregroundStyle(Color.appTextSecondary)
+                    }
+                }
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }

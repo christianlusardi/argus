@@ -172,27 +172,70 @@ struct ProjectCostChart: View {
     }
 }
 
+enum ProjectSortKey { case name, messages, output, cost, web, aiPct }
+
 struct ProjectTable: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var sortKey: ProjectSortKey = .cost
+    @State private var sortAsc: Bool = false
+
+    var sorted: [ProjectStats] {
+        let base = store.filteredSortedProjects
+        switch sortKey {
+        case .name:     return base.sorted { sortAsc ? $0.project < $1.project : $0.project > $1.project }
+        case .messages: return base.sorted { sortAsc ? $0.messageCount < $1.messageCount : $0.messageCount > $1.messageCount }
+        case .output:   return base.sorted { sortAsc ? $0.outputTokens < $1.outputTokens : $0.outputTokens > $1.outputTokens }
+        case .cost:     return sortAsc ? base.reversed() : base
+        case .web:      return base.sorted { sortAsc ? $0.webSearchRequests < $1.webSearchRequests : $0.webSearchRequests > $1.webSearchRequests }
+        case .aiPct:    return base.sorted { sortAsc ? $0.aiCodePct < $1.aiCodePct : $0.aiCodePct > $1.aiCodePct }
+        }
+    }
+
+    private var chevron: some View {
+        Image(systemName: sortAsc ? "chevron.up" : "chevron.down")
+            .font(.system(size: 7))
+    }
+
+    func colHeader(_ label: String, key: ProjectSortKey, width: CGFloat, align: Alignment = .trailing) -> some View {
+        Button {
+            if sortKey == key { sortAsc.toggle() } else { sortKey = key; sortAsc = false }
+        } label: {
+            HStack(spacing: 2) {
+                if align == .leading {
+                    Text(label)
+                    if sortKey == key { chevron }
+                    Spacer()
+                } else {
+                    Spacer()
+                    if sortKey == key { chevron }
+                    Text(label)
+                }
+            }
+            .frame(width: width, alignment: align)
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(sortKey == key ? Color.appAccent : Color.appTextTertiary)
+        .tracking(0.4)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("PROJECT")   .frame(maxWidth: .infinity, alignment: .leading)
-                Text("MSG")       .frame(width: 55, alignment: .trailing)
-                Text("OUTPUT")    .frame(width: 75, alignment: .trailing)
-                Text("COST")      .frame(width: 75, alignment: .trailing)
-                Text("WEB")       .frame(width: 45, alignment: .trailing)
+                colHeader("PROJECT", key: .name, width: .infinity, align: .leading)
+                colHeader("MSG", key: .messages, width: 48)
+                colHeader("OUTPUT", key: .output, width: 70)
+                colHeader("COST", key: .cost, width: 72)
+                colHeader("WEB", key: .web, width: 36)
+                colHeader("AI LINES", key: .aiPct, width: 68)
+                colHeader("% AI", key: .aiPct, width: 48)
             }
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(Color.appTextTertiary)
-            .tracking(0.4)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
             Color.appBorder.frame(height: 1)
 
-            ForEach(store.filteredSortedProjects) { proj in
+            ForEach(sorted) { proj in
                 HStack {
                     Text(proj.project)
                         .font(.system(size: 12))
@@ -202,19 +245,27 @@ struct ProjectTable: View {
                     Text("\(proj.messageCount)")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.appTextSecondary)
-                        .frame(width: 55, alignment: .trailing)
+                        .frame(width: 48, alignment: .trailing)
                     Text(formatTokens(proj.outputTokens))
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.appTextPrimary)
-                        .frame(width: 75, alignment: .trailing)
+                        .frame(width: 70, alignment: .trailing)
                     Text(formatCost(proj.estimatedCostUSD))
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Color.appAccent)
-                        .frame(width: 75, alignment: .trailing)
+                        .frame(width: 72, alignment: .trailing)
                     Text(proj.webSearchRequests > 0 ? "\(proj.webSearchRequests)" : "—")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.appTextTertiary)
-                        .frame(width: 45, alignment: .trailing)
+                        .frame(width: 36, alignment: .trailing)
+                    Text(proj.aiLinesWritten > 0 ? formatTokens(proj.aiLinesWritten) : "—")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .frame(width: 68, alignment: .trailing)
+                    Text(proj.gitLinesAdded > 0 ? String(format: "%.0f%%", proj.aiCodePct * 100) : "—")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(proj.aiCodePct > 0 ? Color.appAccent : Color.appTextTertiary)
+                        .frame(width: 48, alignment: .trailing)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
