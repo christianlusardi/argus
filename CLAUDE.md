@@ -14,6 +14,22 @@ When adding a new `.swift` file, add it to the `SOURCES=(...)` list in `build.sh
 
 Build target is **macOS 26** (`-target arm64-apple-macosx26.0`). Required for Liquid Glass APIs (`glassEffect`).
 
+## Release
+
+```bash
+bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattivamente
+```
+
+`release.sh` esegue in ordine:
+1. **Flight checklist** — verifica `swiftc`, `git`, `codesign`, `gh`; installa Homebrew e gh CLI se mancanti; controlla autenticazione GitHub e che il tag non esista già
+2. **Build** — `bash build.sh` (firma ad-hoc inclusa)
+3. **Zip** — `ditto -c -k --keepParent ArgusAI.app ArgusAI-vX.Y.Z-YYYYMMDD.zip`
+4. **Fingerprint** — SHA256 + MD5 del zip (salvati anche in `.sha256`)
+5. **Tag Git** — `git tag -a vX.Y.Z` + push su origin
+6. **GitHub Release** — `gh release create` con zip allegato e note complete (changelog automatico, tabella hash, istruzioni Gatekeeper)
+
+> `dist.sh` crea solo lo zip locale senza pubblicare — utile per distribuire manualmente.
+
 ## Architecture
 
 | File | Role |
