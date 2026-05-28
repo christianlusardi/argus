@@ -16,10 +16,10 @@ ArgusAI reads the local log files that Claude Code writes on your machine and tu
 |---|---|
 | **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown |
 | **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) |
-| **Activity** | Daily message chart, day-of-week heatmap, active streak |
-| **Schedule** | Hourly usage distribution, your peak hour, average start/end time |
-| **Projects** | Cost and token usage broken down by repository |
-| **Sessions** | Per-session table with cost, model, output tokens and subagent badge |
+| **Activity** | Daily message chart (with tooltip), Output/Context Ratio trend, day-of-week heatmap, current + best-ever streak |
+| **Schedule** | Hourly usage distribution (with tooltip), **cost per hour of day**, average start/end time, work hours |
+| **Projects** | Cost and token usage by repository — **sortable columns** (click any header) |
+| **Sessions** | Per-session table with **search**, **sortable columns**, pagination ("Load more") |
 | **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend, daily cost chart, response time, cost per user |
 
 Everything updates automatically every 3 seconds. No data leaves your machine.
@@ -135,6 +135,7 @@ Use the **TIME RANGE** picker in the sidebar to scope everything to:
 - **7d** — last 7 days
 - **30d** — last 30 days
 - **All** — since you started using Claude Code
+- **Custom range** — pick any **Da** (from) and **Al** (to) date with the calendar pickers below the preset buttons; selecting a date activates the custom filter automatically
 
 ### Account filter
 If you use Claude Code with **multiple accounts or API keys**, ArgusAI tracks each one separately and shows an **ACCOUNT** picker in the sidebar. Selecting an account scopes all tabs — costs, tokens, sessions, projects — to that identity only.
@@ -149,6 +150,27 @@ ArgusAI detects the active auth automatically, following Claude Code's own prior
 Each API key and each OAuth account is treated as a **distinct identity** with its own history. A setup with 3 API keys and 2 OAuth accounts produces 5 separate entries, all filterable and individually charted in the "By Account" Overview card.
 
 The ACCOUNT section is hidden when you only have one identity — it only appears when there's something to distinguish.
+
+---
+
+## Export
+
+| Shortcut | Action |
+|---|---|
+| **Cmd+E** | Export all sessions as CSV |
+| **Cmd+Shift+E** | Export all sessions as JSON |
+| **Cmd+R** | Force refresh |
+
+---
+
+## Notifications
+
+- **Daily limit alert** — set a cost threshold in the sidebar; fires once per day when today's spend crosses it
+- **Weekly summary** — every Monday at 09:00 a notification shows last week's total cost and message count
+
+## Menu bar
+
+The menu bar extra shows today's cost at a glance. While Claude Code is actively running a session, the waveform icon fills solid and a green dot appears.
 
 ---
 

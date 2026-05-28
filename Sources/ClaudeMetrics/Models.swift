@@ -151,6 +151,8 @@ struct StatsCache: Codable {
     let knownAccountsList: [AccountInfo]?
     let dailyAvgResponseTimeSec: [String: Double]?
     let dailyAccountCosts: [DailyAccountCosts]?
+    let dailyHourCosts: [String: [String: Double]]?   // day → hour_str → cost_usd
+    let latestMessageTimestamp: String?               // ISO8601 timestamp of most recent message
 }
 
 struct AccountInfo: Equatable, Codable, Identifiable {

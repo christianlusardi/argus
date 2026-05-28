@@ -116,9 +116,12 @@ The sidebar "ACCOUNT" section is only shown when `knownAccounts.count > 1`.
 
 ## Date filtering
 
-`MetricsStore.dateFilter: DateFilter` (`.today` / `.sevenDays` / `.thirtyDays` / `.all`) drives all views.
+`MetricsStore.dateFilter: DateFilter` (`.today` / `.sevenDays` / `.thirtyDays` / `.all` / `.custom`) drives all views.
 
 **Pattern:** every KPI has a `filteredXxx` computed property in `MetricsStore` that slices the relevant `[DailyXxx]` array from `StatsCache` by date, then aggregates. Never read raw all-time stats directly in views; always use the `filtered*` variant.
+
+### Custom date range
+`.custom` is set when the user picks dates via the "Da / Al" `DatePicker` rows in the sidebar. `MetricsStore` owns `customStartDate` and `customEndDate` (date-only, no time). All 11 filter switch statements handle `.custom` as `>= startOfDay(from) && < startOfDay(to+1)`. Week-over-week switches return `[]` for `.custom` (no delta badge). The segmented picker uses `DateFilter.presets` (not `allCases`) so `.custom` never appears as a segment.
 
 ## Window & UI style
 
@@ -126,14 +129,15 @@ The sidebar "ACCOUNT" section is only shown when `knownAccounts.count > 1`.
 - Sidebar top padding is **38pt** to clear the traffic light buttons
 - Cards use **macOS 26 Liquid Glass**: `.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))` — use this for any new card component, never `Color.appSurface` + clipShape
 
-When adding a new filter-aware property, add all four cases to the switch. `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`.
+When adding a new filter-aware property, add all **five** cases to the switch (`.today`, `.sevenDays`, `.thirtyDays`, `.all`, `.custom`). `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`; `.custom` uses `customStartDate`/`customEndDate` from MetricsStore.
 
 Key per-day structures stored in `StatsCache`:
 | Field | Used for |
 |---|---|
 | `dailyTotals: [DailyTokenTotals]` | Overview KPIs (cost, tokens, cache, web searches) |
 | `dailyModelBreakdown: [DailyModelBreakdown]` | Models tab |
-| `dailyHourCounts: [String: [String: Int]]` | Schedule tab hourly chart |
+| `dailyHourCounts: [String: [String: Int]]` | Schedule tab hourly message chart |
+| `dailyHourCosts: [String: [String: Double]]?` | Schedule tab — Cost per Hour chart |
 | `dailyProjectCosts: [DailyProjectCosts]` | Projects tab |
 | `dailyWorkHours: [DailyWorkHours]` | Schedule work-hour bars |
 | `dailyActivity: [DailyActivity]` | Activity chart, day-of-week, streak |
@@ -142,6 +146,7 @@ Key per-day structures stored in `StatsCache`:
 | `subagentCostUSD: Double?` | Agent Type breakdown |
 | `directCostUSD: Double?` | Agent Type breakdown |
 | `dailyAvgResponseTimeSec: [String: Double]?` | Platform tab — Response Time chart |
+| `latestMessageTimestamp: String?` | Menu bar live-activity indicator |
 
 ## Adaptive chart aggregation
 
@@ -159,18 +164,26 @@ Key per-day structures stored in `StatsCache`:
 |---|---|
 | **Platform tab** | `PlatformView.swift` — Total Cost, Total Requests, Avg Cost/Req, Avg Context/Req, Avg Output/Req, Token Trend, Daily Cost, Response Time, Cost per User |
 | **Response Time** | `user_turns` table + correlated subquery in `queryDailyAvgResponseTime()`; measures human message → first assistant token |
-| **Sessions tab** | `SessionsView.swift` — per-session table; `filteredSessions` in `MetricsStore` |
-| **Menu bar extra** | `ClaudeMetricsApp.swift` — `MenuBarExtra` with today cost+msgs, week cost, alert dot |
-| **Delta badges** | `DeltaBadge` in `Components.swift`; `costDeltaPct`/`messagesDeltaPct` in `MetricsStore` (week-over-week) |
+| **Sessions tab** | `SessionsView.swift` — per-session table with search field + sortable columns (DATE/MSGS/OUTPUT/COST); `visibleSessions` paginates via `sessionDisplayLimit` (default 100); "Load more" button appears when there are more results |
+| **Menu bar extra** | `ClaudeMetricsApp.swift` — `MenuBarExtra` with today cost+msgs, week cost, alert dot; live-activity indicator (green dot + filled waveform icon) when a message was ingested in the last 60 seconds |
+| **Delta badges** | `DeltaBadge` in `Components.swift`; `costDeltaPct`/`messagesDeltaPct` in `MetricsStore` (week-over-week); no delta for `.custom` filter |
 | **Daily limit alert** | `alertThreshold` (`@Published`, persisted in UserDefaults); `UNNotificationCenter` fires once per day when today's cost ≥ threshold |
+| **Weekly summary notification** | `scheduleWeeklySummaryIfNeeded()` — fires every Monday 09:00 with last-7-days cost + message count; guarded by week key in UserDefaults |
 | **Forecast** | `burnRatePerDay`, `currentMonthCost`, `daysLeftInMonth`, `projectedMonthCost` in `MetricsStore` |
 | **Agent Type breakdown** | `filteredSubagentCost`, `filteredDirectCost` in `MetricsStore`; two-segment bar in `OverviewView` |
-| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E shortcut |
+| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E |
+| **JSON export** | `exportJSON()` in `MetricsStore` — pretty-printed JSON of all sessions; Cmd+Shift+E |
 | **Daily Cost chart** | `OverviewDailyCostChart` in `OverviewView` (golden area+line); also in `PlatformView` as bar chart with adaptive aggregation |
 | **Multi-account tracking** | `account_timeline` table + `messages.account_uuid`; `readCurrentAccount()` in `MetricsStore`; account chip in sidebar |
 | **Account filter** | `MetricsStore.accountFilter` → `ArgusDB.accountFilter` → SQL `AND account_uuid = '...'` on all queries; sidebar picker (hidden if single account) |
 | **Account cost breakdown** | `queryAccountCosts()` → `StatsCache.accountCosts`; multi-segment bar in `OverviewView` "By Account" card |
 | **Filtered Cost per User** | `MetricsStore.filteredAccountCosts` — aggregates `DailyAccountCosts` by date range; shows cost + message count per account |
+| **Best Streak** | `longestStreak` in `MetricsStore` — longest ever consecutive-day run; shown as "Best Streak" card (trophy) in `ActivityView` |
+| **Output/Context Ratio** | `filteredEfficiencyTrend` in `MetricsStore` — daily ratio of output tokens to total context tokens; line+area chart in `ActivityView` |
+| **Cost per Hour** | `queryDailyHourCosts()` → `dailyHourCosts` → `filteredHourlyCosts`; gold bar chart "Cost per Hour of Day" in `ScheduleView` |
+| **Chart tooltips** | `chartXSelection` + overlay on `ActivityBarChart` (date → msg count) and `HourlyBarChart` (hour → msg count) |
+| **Sortable Projects table** | `ProjectSortKey` enum + `sorted` computed var in `ProjectTable`; click any column header (PROJECT/MSG/OUTPUT/COST/WEB/% AI) to sort |
+| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar; selecting a date activates `.custom` filter; clicking a preset deactivates it |
 
 ### Platform tab — Cost per User
 Uses `filteredAccountCosts: [AccountCostBreakdown]` computed from `DailyAccountCosts` (per-day, per-account cost + message counts). This ensures the "Today" filter shows only today's cost, not the all-time total. `AccountCostBreakdown` carries both `costUSD` and `messageCount`.

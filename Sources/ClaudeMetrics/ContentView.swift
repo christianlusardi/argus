@@ -177,12 +177,46 @@ struct SidebarView: View {
                     .tracking(0.5)
                     .padding(.horizontal, 16)
                     .padding(.top, 10)
-                Picker("", selection: $store.dateFilter) {
-                    ForEach(DateFilter.allCases, id: \.self) { f in
+                Picker("", selection: Binding(
+                    get: { store.dateFilter == .custom ? DateFilter.all : store.dateFilter },
+                    set: { store.dateFilter = $0 }
+                )) {
+                    ForEach(DateFilter.presets, id: \.self) { f in
                         Text(f.rawValue).tag(f)
                     }
                 }
                 .pickerStyle(.segmented)
+                .padding(.horizontal, 12)
+
+                // Custom date range
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text("Da")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.appTextSecondary)
+                            .frame(width: 20, alignment: .trailing)
+                        DatePicker("", selection: Binding(
+                            get: { store.customStartDate },
+                            set: { store.customStartDate = $0; store.dateFilter = .custom }
+                        ), in: ...store.customEndDate, displayedComponents: .date)
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    HStack(spacing: 6) {
+                        Text("Al")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.appTextSecondary)
+                            .frame(width: 20, alignment: .trailing)
+                        DatePicker("", selection: Binding(
+                            get: { store.customEndDate },
+                            set: { store.customEndDate = $0; store.dateFilter = .custom }
+                        ), in: store.customStartDate..., displayedComponents: .date)
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
             }

@@ -9,6 +9,9 @@ enum DateFilter: String, CaseIterable {
     case sevenDays  = "7d"
     case thirtyDays = "30d"
     case all        = "All"
+    case custom     = "Custom"
+
+    static let presets: [DateFilter] = [.today, .sevenDays, .thirtyDays, .all]
 }
 
 class MetricsStore: ObservableObject {
@@ -17,6 +20,10 @@ class MetricsStore: ObservableObject {
     @Published var error: String?
     @Published var lastRefresh: Date?
     @Published var dateFilter: DateFilter = .all
+    @Published var customStartDate: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+    @Published var customEndDate: Date = Date()
+    @Published var sessionSearchText: String = ""
+    @Published var sessionDisplayLimit: Int = 100
     @Published var alertThreshold: Double = UserDefaults.standard.double(forKey: "argusai.alertThreshold") {
         didSet { UserDefaults.standard.set(alertThreshold, forKey: "argusai.alertThreshold") }
     }
@@ -86,6 +93,7 @@ class MetricsStore: ObservableObject {
                     self.parsing = false
                     self.initialLoadDone = true
                     self.checkAlerts()
+                    self.scheduleWeeklySummaryIfNeeded()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -559,6 +567,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return recentActivity.filter { $0.dateValue >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return recentActivity.filter { $0.dateValue >= start && $0.dateValue < end }
         }
     }
 
@@ -620,6 +632,34 @@ class MetricsStore: ObservableObject {
         return streak
     }
 
+    var longestStreak: Int {
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let cal = Calendar.current
+        let sorted = recentActivity.compactMap { fmt.date(from: $0.date) }
+            .map { cal.startOfDay(for: $0) }.sorted()
+        var maxStreak = 0, streak = 0
+        var prev: Date? = nil
+        for day in sorted {
+            if let p = prev, cal.date(byAdding: .day, value: 1, to: p) == day {
+                streak += 1
+            } else {
+                streak = 1
+            }
+            if streak > maxStreak { maxStreak = streak }
+            prev = day
+        }
+        return maxStreak
+    }
+
+    var hasRecentActivity: Bool {
+        guard let ts = stats?.latestMessageTimestamp else { return false }
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let d = fmt.date(from: ts) ?? ISO8601DateFormatter().date(from: ts)
+        guard let d else { return false }
+        return Date().timeIntervalSince(d) < 60
+    }
+
     var totalWebSearches: Int {
         stats?.modelUsage?.values.reduce(0) { $0 + ($1.webSearchRequests ?? 0) } ?? 0
     }
@@ -640,6 +680,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.date) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -678,6 +722,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.date) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -726,6 +774,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.key) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -759,6 +811,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.date) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -837,6 +893,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.date) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -869,6 +929,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.firstDay) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.firstDay) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -927,7 +991,7 @@ class MetricsStore: ObservableObject {
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
         let now = Date()
         switch dateFilter {
-        case .all: return []
+        case .all, .custom: return []
         case .today:
             let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: now)!
             let yStart = Calendar.current.startOfDay(for: yesterday)
@@ -968,7 +1032,7 @@ class MetricsStore: ObservableObject {
         let now = Date()
         let filtered: [DailyActivity]
         switch dateFilter {
-        case .all: return 0
+        case .all, .custom: return 0
         case .today:
             let yStart = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: -1, to: now)!)
             let yEnd   = Calendar.current.startOfDay(for: now)
@@ -1014,6 +1078,59 @@ class MetricsStore: ObservableObject {
 
     var platformDailyTotals: [DailyTokenTotals] { filteredDailyTotals }
 
+    var filteredHourlyCosts: [(hour: Int, cost: Double)] {
+        let all = stats?.dailyHourCosts ?? [:]
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let filtered: [String: [String: Double]]
+        switch dateFilter {
+        case .all: filtered = all
+        case .today:
+            let start = Calendar.current.startOfDay(for: Date())
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= start }
+        case .sevenDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        case .thirtyDays:
+            let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
+            filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            filtered = all.filter { let d = fmt.date(from: $0.key) ?? .distantPast; return d >= start && d < end }
+        }
+        var totals = [Int: Double]()
+        for (_, hourMap) in filtered {
+            for (hStr, cost) in hourMap { if let h = Int(hStr) { totals[h, default: 0] += cost } }
+        }
+        return (0..<24).map { h in (hour: h, cost: totals[h] ?? 0) }
+    }
+
+    var filteredEfficiencyTrend: [(date: String, ratio: Double)] {
+        filteredDailyTotals.compactMap { day in
+            let ctx = day.inputTokens + day.cacheReadTokens + day.cacheCreateTokens
+            guard ctx > 0 else { return nil }
+            return (date: day.date, ratio: Double(day.outputTokens) / Double(ctx))
+        }.sorted { $0.date < $1.date }
+    }
+
+    var visibleSessions: [SessionSummary] {
+        let base = filteredSessions
+        let searched = sessionSearchText.isEmpty ? base : base.filter {
+            $0.project.localizedCaseInsensitiveContains(sessionSearchText) ||
+            $0.sessionId.localizedCaseInsensitiveContains(sessionSearchText)
+        }
+        return Array(searched.prefix(sessionDisplayLimit))
+    }
+
+    var totalFilteredSessionCount: Int {
+        let base = filteredSessions
+        guard !sessionSearchText.isEmpty else { return base.count }
+        return base.filter {
+            $0.project.localizedCaseInsensitiveContains(sessionSearchText) ||
+            $0.sessionId.localizedCaseInsensitiveContains(sessionSearchText)
+        }.count
+    }
+
     private var filteredDailyAccountCosts: [DailyAccountCosts] {
         let all = stats?.dailyAccountCosts ?? []
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
@@ -1028,6 +1145,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             return all.filter { (fmt.date(from: $0.date) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            return all.filter { let d = fmt.date(from: $0.date) ?? .distantPast; return d >= start && d < end }
         }
     }
 
@@ -1142,6 +1263,10 @@ class MetricsStore: ObservableObject {
         case .thirtyDays:
             let cut = Calendar.current.date(byAdding: .day, value: -30, to: Date())!
             filtered = all.filter { (fmt.date(from: $0.key) ?? .distantPast) >= cut }
+        case .custom:
+            let start = Calendar.current.startOfDay(for: customStartDate)
+            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: customEndDate))!
+            filtered = all.filter { let d = fmt.date(from: $0.key) ?? .distantPast; return d >= start && d < end }
         }
         return filtered.map { (date: $0.key, avgSec: $0.value) }.sorted { $0.date < $1.date }
     }
@@ -1185,6 +1310,63 @@ class MetricsStore: ObservableObject {
     }
 
     // MARK: - Export CSV
+
+    @MainActor func exportJSON() {
+        struct SessionExport: Encodable {
+            let sessionId, project, firstDay, topModel: String
+            let messageCount, outputTokens: Int
+            let costUSD: Double
+            let isSubagent: Bool
+            let rating: Int?
+        }
+        let data = (stats?.sessions ?? []).map { s in
+            SessionExport(sessionId: s.sessionId, project: s.project, firstDay: s.firstDay,
+                          topModel: s.topModel, messageCount: s.messageCount,
+                          outputTokens: s.outputTokens, costUSD: s.costUSD,
+                          isSubagent: s.isSubagent, rating: s.rating)
+        }
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let json = try? enc.encode(data) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "argusai-\(fmt.string(from: Date())).json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? json.write(to: url)
+        }
+    }
+
+    func scheduleWeeklySummaryIfNeeded() {
+        let key = "argusai.weeklyNotifScheduled"
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-ww"
+        let thisWeek = fmt.string(from: Date())
+        guard UserDefaults.standard.string(forKey: key) != thisWeek else { return }
+        UserDefaults.standard.set(thisWeek, forKey: key)
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            var comps = DateComponents()
+            comps.weekday = 2  // Monday
+            comps.hour = 9
+            comps.minute = 0
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let content = UNMutableNotificationContent()
+            content.title = "ArgusAI Weekly Summary"
+            let fmt2 = DateFormatter(); fmt2.dateFormat = "yyyy-MM-dd"
+            let cut = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            let weekCost = (self.stats?.dailyTotals ?? [])
+                .filter { (fmt2.date(from: $0.date) ?? .distantPast) >= cut }
+                .reduce(0.0) { $0 + $1.estimatedCostUSD }
+            let weekMsgs = (self.stats?.dailyActivity ?? [])
+                .filter { $0.dateValue >= cut }
+                .reduce(0) { $0 + $1.messageCount }
+            content.body = String(format: "Last 7 days: %@ · %d messages", formatCost(weekCost), weekMsgs)
+            content.sound = .default
+            let req = UNNotificationRequest(identifier: "argusai.weekly.\(thisWeek)", content: content, trigger: trigger)
+            UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+        }
+    }
 
     @MainActor func exportCSV() {
         var csv = "session_id,project,date,messages,output_tokens,cost_usd,is_subagent,model\n"

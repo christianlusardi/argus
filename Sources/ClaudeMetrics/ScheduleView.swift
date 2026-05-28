@@ -83,6 +83,13 @@ struct ScheduleView: View {
                         .frame(height: 220)
                 }
 
+                if store.filteredHourlyCosts.contains(where: { $0.cost > 0 }) {
+                    SectionCard(title: "Cost per Hour of Day", icon: "dollarsign.arrow.circlepath") {
+                        HourlyCostChart()
+                            .frame(height: 180)
+                    }
+                }
+
                 SectionCard(title: "Top 5 Active Hours", icon: "chart.line.uptrend.xyaxis") {
                     TopHoursView()
                 }
@@ -117,6 +124,7 @@ struct ScheduleView: View {
 
 struct HourlyBarChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedLabel: String? = nil
 
     struct HourPoint: Identifiable {
         let id: Int
@@ -142,6 +150,15 @@ struct HourlyBarChart: View {
         }
     }
 
+    func fullHourLabel(_ h: Int) -> String {
+        switch h {
+        case 0: return "Midnight"
+        case 12: return "Noon"
+        case let x where x < 12: return "\(x):00 AM"
+        default: return "\(h-12):00 PM"
+        }
+    }
+
     var body: some View {
         Chart(points) { p in
             BarMark(
@@ -155,6 +172,7 @@ struct HourlyBarChart: View {
             )
             .cornerRadius(3)
         }
+        .chartXSelection(value: $selectedLabel)
         .chartXAxis {
             AxisMarks { _ in
                 AxisValueLabel()
@@ -166,6 +184,82 @@ struct HourlyBarChart: View {
             AxisMarks { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
                 AxisValueLabel().foregroundStyle(Color.appTextSecondary).font(.system(size: 10))
+            }
+        }
+        .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { _ in
+            GeometryReader { _ in
+                if let sel = selectedLabel,
+                   let p = points.first(where: { ($0.label.isEmpty ? " " : $0.label) == sel }) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(fullHourLabel(p.hour))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.appTextPrimary)
+                        Text("\(p.count) msgs")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color.appTextSecondary)
+                    }
+                    .padding(6)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(8)
+                }
+            }
+        }
+    }
+}
+
+struct HourlyCostChart: View {
+    @EnvironmentObject var store: MetricsStore
+
+    struct CostPoint: Identifiable {
+        let id: Int; let hour: Int; let cost: Double; let label: String
+    }
+
+    var maxCost: Double { store.filteredHourlyCosts.map(\.cost).max() ?? 1 }
+
+    var points: [CostPoint] {
+        store.filteredHourlyCosts.map { d in
+            let label: String
+            switch d.hour {
+            case 0:  label = "12a"
+            case 6:  label = "6a"
+            case 12: label = "12p"
+            case 18: label = "6p"
+            case let h where h % 3 == 0: label = h < 12 ? "\(h)a" : "\(h-12)p"
+            default: label = ""
+            }
+            return CostPoint(id: d.hour, hour: d.hour, cost: d.cost, label: label)
+        }
+    }
+
+    var body: some View {
+        Chart(points) { p in
+            BarMark(
+                x: .value("Hour", p.label.isEmpty ? " " : p.label),
+                y: .value("Cost", p.cost)
+            )
+            .foregroundStyle(
+                p.cost == maxCost
+                ? Color.appGold
+                : Color.appGold.opacity(0.20 + 0.65 * (maxCost > 0 ? p.cost / maxCost : 0))
+            )
+            .cornerRadius(3)
+        }
+        .chartXAxis {
+            AxisMarks { _ in
+                AxisValueLabel().font(.system(size: 10)).foregroundStyle(Color.appTextSecondary)
+            }
+        }
+        .chartYAxis {
+            AxisMarks { v in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
+                if let val = v.as(Double.self) {
+                    AxisValueLabel {
+                        Text(String(format: val >= 0.01 ? "$%.2f" : "$%.4f", val))
+                            .font(.system(size: 10)).foregroundStyle(Color.appTextSecondary)
+                    }
+                }
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }

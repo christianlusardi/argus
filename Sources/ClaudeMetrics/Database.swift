@@ -442,8 +442,10 @@ final class ArgusDB {
         let (subCost, dirCost)  = try queryAgentTypeCosts()
         let accountCosts        = try queryAccountCosts()
         let knownAccounts       = try queryKnownAccounts()
-        let dailyAvgResponseTime = try queryDailyAvgResponseTime()
-        let dailyAccountCosts   = try queryDailyAccountCosts()
+        let dailyAvgResponseTime  = try queryDailyAvgResponseTime()
+        let dailyAccountCosts    = try queryDailyAccountCosts()
+        let dailyHourCosts       = try queryDailyHourCosts()
+        let latestTs             = try queryLatestMessageTimestamp()
 
         let dailyCosts = Dictionary(uniqueKeysWithValues: dailyTotals.map { ($0.date, $0.estimatedCostUSD) })
 
@@ -475,7 +477,9 @@ final class ArgusDB {
             accountCosts: accountCosts.isEmpty ? nil : accountCosts,
             knownAccountsList: knownAccounts.isEmpty ? nil : knownAccounts,
             dailyAvgResponseTimeSec: dailyAvgResponseTime.isEmpty ? nil : dailyAvgResponseTime,
-            dailyAccountCosts: dailyAccountCosts.isEmpty ? nil : dailyAccountCosts
+            dailyAccountCosts: dailyAccountCosts.isEmpty ? nil : dailyAccountCosts,
+            dailyHourCosts: dailyHourCosts.isEmpty ? nil : dailyHourCosts,
+            latestMessageTimestamp: latestTs
         )
     }
 
@@ -586,6 +590,28 @@ final class ArgusDB {
             result[day, default: [:]]["\(colInt(stmt,1))"] = colInt(stmt,2)
         }
         return result
+    }
+
+    private func queryDailyHourCosts() throws -> [String: [String: Double]] {
+        let stmt = try prepare("""
+            SELECT day, hour, SUM(cost_usd) FROM messages WHERE day != '' \(af)
+            GROUP BY day, hour ORDER BY day
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [String: [String: Double]] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let day = colTxt(stmt, 0)
+            result[day, default: [:]]["\(colInt(stmt, 1))"] = colDbl(stmt, 2)
+        }
+        return result
+    }
+
+    private func queryLatestMessageTimestamp() throws -> String? {
+        let stmt = try prepare("SELECT MAX(timestamp) FROM messages WHERE 1=1 \(af)")
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        let ts = colTxt(stmt, 0)
+        return ts.isEmpty ? nil : ts
     }
 
     private func queryDailyWorkHours() throws -> [DailyWorkHours] {
