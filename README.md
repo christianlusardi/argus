@@ -151,6 +151,11 @@ Each API key and each OAuth account is treated as a **distinct identity** with i
 
 The ACCOUNT section is hidden when you only have one identity — it only appears when there's something to distinguish.
 
+### Project filter
+If you work across **multiple repositories**, ArgusAI shows a **PROJECT** picker in the sidebar. Selecting a project scopes every tab — costs, tokens, sessions, activity, schedule — to that repository only.
+
+The PROJECT section is hidden when you only have one project — it only appears when there's something to distinguish.
+
 ---
 
 ## Export
