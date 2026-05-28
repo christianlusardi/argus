@@ -111,10 +111,15 @@ struct ProportionalBar: View {
 
 struct DailyCostTrendChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedDate: Date? = nil
 
     struct CostPoint: Identifiable {
         let id: String; let date: Date; let cost: Double
     }
+
+    private let tooltipFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
 
     var points: [CostPoint] {
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
@@ -122,6 +127,12 @@ struct DailyCostTrendChart: View {
             guard let d = fmt.date(from: item.date) else { return nil }
             return CostPoint(id: item.date, date: d, cost: item.cost)
         }
+    }
+
+    private func closestPoint(to date: Date) -> CostPoint? {
+        points.min(by: {
+            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+        })
     }
 
     var body: some View {
@@ -136,6 +147,7 @@ struct DailyCostTrendChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 2))
                 .interpolationMethod(.catmullRom)
         }
+        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
@@ -154,6 +166,31 @@ struct DailyCostTrendChart: View {
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let sel = selectedDate,
+                   let p = closestPoint(to: sel),
+                   let plotAnchor = proxy.plotFrame {
+                    let plotRect = geo[plotAnchor]
+                    let xPos = (proxy.position(forX: p.date) ?? 0) + plotRect.minX
+                    let yPos = (proxy.position(forY: p.cost) ?? 0) + plotRect.minY
+
+                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
+                    ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.appGold)
+                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tooltipFmt.string(from: p.date))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                            Text(formatCost(p.cost))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.appGold)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

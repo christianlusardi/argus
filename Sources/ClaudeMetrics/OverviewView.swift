@@ -238,6 +238,17 @@ struct OverviewView: View {
 
 struct DailyMessagesChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedDate: Date? = nil
+
+    private let tooltipFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
+
+    private func closestItem(to date: Date) -> DailyActivity? {
+        store.filteredActivity.min(by: {
+            abs($0.dateValue.timeIntervalSince(date)) < abs($1.dateValue.timeIntervalSince(date))
+        })
+    }
 
     var body: some View {
         Chart(store.filteredActivity) { item in
@@ -268,6 +279,7 @@ struct DailyMessagesChart: View {
             .foregroundStyle(Color.appAccent)
             .symbolSize(28)
         }
+        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 7)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
@@ -283,11 +295,37 @@ struct DailyMessagesChart: View {
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let sel = selectedDate,
+                   let item = closestItem(to: sel),
+                   let plotAnchor = proxy.plotFrame {
+                    let plotRect = geo[plotAnchor]
+                    let xPos = (proxy.position(forX: item.dateValue) ?? 0) + plotRect.minX
+                    let yPos = (proxy.position(forY: item.messageCount) ?? 0) + plotRect.minY
+
+                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
+                    ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.appAccent)
+                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tooltipFmt.string(from: item.dateValue))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                            Text("\(item.messageCount) msgs")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.appAccent)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 struct OverviewDailyCostChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedDate: Date? = nil
 
     struct CostPoint: Identifiable {
         let id: String
@@ -295,12 +333,22 @@ struct OverviewDailyCostChart: View {
         let cost: Double
     }
 
+    private let tooltipFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
+
     var points: [CostPoint] {
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
         return store.filteredDailyCostData.compactMap { item in
             guard let d = fmt.date(from: item.date) else { return nil }
             return CostPoint(id: item.date, date: d, cost: item.cost)
         }
+    }
+
+    private func closestPoint(to date: Date) -> CostPoint? {
+        points.min(by: {
+            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+        })
     }
 
     var body: some View {
@@ -317,6 +365,7 @@ struct OverviewDailyCostChart: View {
             PointMark(x: .value("Date", p.date), y: .value("Cost", p.cost))
                 .foregroundStyle(Color.appGold).symbolSize(28)
         }
+        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 7)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
@@ -335,6 +384,31 @@ struct OverviewDailyCostChart: View {
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let sel = selectedDate,
+                   let p = closestPoint(to: sel),
+                   let plotAnchor = proxy.plotFrame {
+                    let plotRect = geo[plotAnchor]
+                    let xPos = (proxy.position(forX: p.date) ?? 0) + plotRect.minX
+                    let yPos = (proxy.position(forY: p.cost) ?? 0) + plotRect.minY
+
+                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
+                    ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.appGold)
+                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tooltipFmt.string(from: p.date))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                            Text(formatCost(p.cost))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.appGold)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
