@@ -248,6 +248,33 @@ struct SidebarView: View {
                 .padding(.bottom, 6)
             }
 
+            // Project filter (only shown when multiple projects known)
+            if store.knownProjects.count > 1 {
+                VStack(alignment: .leading, spacing: 4) {
+                    Color.appBorder.frame(height: 1)
+                    Text("PROJECT")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.appTextTertiary)
+                        .tracking(0.5)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 10)
+                    AccountFilterButton(label: "All Projects", icon: "folder.fill",
+                                        isSelected: store.projectFilter == nil) {
+                        store.projectFilter = nil
+                    }
+                    ForEach(store.knownProjects, id: \.self) { proj in
+                        AccountFilterButton(
+                            label: proj,
+                            icon: "folder",
+                            isSelected: store.projectFilter == proj
+                        ) {
+                            store.projectFilter = proj
+                        }
+                    }
+                }
+                .padding(.bottom, 6)
+            }
+
             // Footer
             VStack(alignment: .leading, spacing: 0) {
                 Color.appBorder.frame(height: 1)

@@ -114,6 +114,13 @@ On first run with the new code, `ArgusDB.claimHistoricalMessages(for:)` runs `UP
 
 The sidebar "ACCOUNT" section is only shown when `knownAccounts.count > 1`.
 
+### Project filter
+`MetricsStore.projectFilter: String?` (nil = all) is set by the sidebar PROJECT picker. Before `buildStatsCache()`, `db.projectFilter` is set — all SQL queries inject `AND project = '...'` via the same `af` / `af(_ alias:)` helpers (which now combine both account and project clauses). Changing `projectFilter` triggers a silent reload.
+
+`ArgusDB.queryKnownProjects()` fetches distinct project names using only the account filter (not the project filter) so the PROJECT picker always lists all available projects. `StatsCache.knownProjectsList: [String]?` carries the list; `MetricsStore.knownProjects` is updated on every refresh.
+
+The sidebar "PROJECT" section is only shown when `knownProjects.count > 1`.
+
 ## Date filtering
 
 `MetricsStore.dateFilter: DateFilter` (`.today` / `.sevenDays` / `.thirtyDays` / `.all` / `.custom`) drives all views.

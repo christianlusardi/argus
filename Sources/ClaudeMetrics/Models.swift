@@ -149,6 +149,7 @@ struct StatsCache: Codable {
     let directCostUSD: Double?
     let accountCosts: [AccountCostBreakdown]?
     let knownAccountsList: [AccountInfo]?
+    let knownProjectsList: [String]?
     let dailyAvgResponseTimeSec: [String: Double]?
     let dailyAccountCosts: [DailyAccountCosts]?
     let dailyHourCosts: [String: [String: Double]]?   // day → hour_str → cost_usd

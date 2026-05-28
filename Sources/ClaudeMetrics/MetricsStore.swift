@@ -32,6 +32,10 @@ class MetricsStore: ObservableObject {
         didSet { if oldValue != accountFilter { loadData(silent: true) } }
     }
     @Published var knownAccounts: [AccountInfo] = []
+    @Published var projectFilter: String? = nil {
+        didSet { if oldValue != projectFilter { loadData(silent: true) } }
+    }
+    @Published var knownProjects: [String] = []
 
     private let projectsURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".claude/projects")
@@ -232,9 +236,13 @@ class MetricsStore: ObservableObject {
             UserDefaults.standard.set(true, forKey: aiBackfillKey)
         }
         db.accountFilter = currentFilter
+        db.projectFilter = projectFilter
         let cache = try db.buildStatsCache()
         if let accounts = cache.knownAccountsList {
             DispatchQueue.main.async { self.knownAccounts = accounts }
+        }
+        if let projects = cache.knownProjectsList {
+            DispatchQueue.main.async { self.knownProjects = projects }
         }
         return cache
     }

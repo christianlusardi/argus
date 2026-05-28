@@ -173,18 +173,23 @@ final class ArgusDB {
         return segs.suffix(2).joined(separator: "-")
     }
 
-    // MARK: - Account filter (set by MetricsStore before buildStatsCache)
+    // MARK: - Account + Project filters (set by MetricsStore before buildStatsCache)
 
     var accountFilter: String?
+    var projectFilter: String?
 
-    // SQL fragment appended to WHERE — safe: value comes from our own DB, not user input
+    // SQL fragments appended to WHERE — safe: values come from our own DB, not user input
     private var af: String {
-        guard let f = accountFilter else { return "" }
-        return "AND account_uuid = '\(f)'"
+        var parts: [String] = []
+        if let f = accountFilter { parts.append("AND account_uuid = '\(f)'") }
+        if let p = projectFilter { parts.append("AND project = '\(p)'") }
+        return parts.joined(separator: " ")
     }
     private func af(_ alias: String) -> String {
-        guard let f = accountFilter else { return "" }
-        return "AND \(alias).account_uuid = '\(f)'"
+        var parts: [String] = []
+        if let f = accountFilter { parts.append("AND \(alias).account_uuid = '\(f)'") }
+        if let p = projectFilter { parts.append("AND \(alias).project = '\(p)'") }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Account tracking
@@ -442,6 +447,7 @@ final class ArgusDB {
         let (subCost, dirCost)  = try queryAgentTypeCosts()
         let accountCosts        = try queryAccountCosts()
         let knownAccounts       = try queryKnownAccounts()
+        let knownProjects       = try queryKnownProjects()
         let dailyAvgResponseTime  = try queryDailyAvgResponseTime()
         let dailyAccountCosts    = try queryDailyAccountCosts()
         let dailyHourCosts       = try queryDailyHourCosts()
@@ -476,6 +482,7 @@ final class ArgusDB {
             directCostUSD: dirCost,
             accountCosts: accountCosts.isEmpty ? nil : accountCosts,
             knownAccountsList: knownAccounts.isEmpty ? nil : knownAccounts,
+            knownProjectsList: knownProjects.isEmpty ? nil : knownProjects,
             dailyAvgResponseTimeSec: dailyAvgResponseTime.isEmpty ? nil : dailyAvgResponseTime,
             dailyAccountCosts: dailyAccountCosts.isEmpty ? nil : dailyAccountCosts,
             dailyHourCosts: dailyHourCosts.isEmpty ? nil : dailyHourCosts,
@@ -887,6 +894,20 @@ final class ArgusDB {
                 authType: colTxt(stmt, 4)
             ))
         }
+        return result
+    }
+
+    func queryKnownProjects() throws -> [String] {
+        // Use account filter only (not project filter) so the picker always shows all projects
+        let accountClause = accountFilter.map { "AND account_uuid = '\($0)'" } ?? ""
+        let stmt = try prepare("""
+            SELECT DISTINCT project FROM messages
+            WHERE project IS NOT NULL AND project != '' \(accountClause)
+            ORDER BY project
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [String] = []
+        while sqlite3_step(stmt) == SQLITE_ROW { result.append(colTxt(stmt, 0)) }
         return result
     }
 
