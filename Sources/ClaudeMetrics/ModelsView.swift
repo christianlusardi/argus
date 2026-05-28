@@ -173,32 +173,50 @@ struct CostPieChart: View {
         }
     }
 
+    private var totalCost: Double {
+        slices.reduce(0) { $0 + $1.cost }
+    }
+
     var body: some View {
-        Chart(slices) { s in
-            SectorMark(
-                angle: .value("Cost", s.cost),
-                innerRadius: .ratio(0.54),
-                angularInset: 2
-            )
-            .foregroundStyle(s.color)
-        }
-        .chartLegend(position: .trailing, alignment: .center) {
-            VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .center, spacing: 24) {
+            Chart(slices) { s in
+                SectorMark(
+                    angle: .value("Cost", s.cost),
+                    innerRadius: .ratio(0.54),
+                    angularInset: 2
+                )
+                .foregroundStyle(s.color)
+            }
+            .chartLegend(.hidden)
+            .chartPlotStyle { $0.background(Color.clear) }
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(slices) { s in
-                    HStack(spacing: 8) {
-                        Circle().fill(s.color).frame(width: 8, height: 8)
-                        Text(s.name)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.appTextSecondary)
-                        Spacer()
+                    HStack(spacing: 10) {
+                        Circle().fill(s.color).frame(width: 9, height: 9)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(s.name)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.appTextPrimary)
+                                .lineLimit(1)
+                            Text(percentLabel(s.cost))
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.appTextTertiary)
+                        }
+                        Spacer(minLength: 12)
                         Text(formatCost(s.cost))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Color.appTextPrimary)
                     }
-                    .frame(minWidth: 200)
                 }
             }
+            .frame(minWidth: 200, maxWidth: 240, alignment: .leading)
         }
-        .chartPlotStyle { $0.background(Color.clear) }
+    }
+
+    private func percentLabel(_ cost: Double) -> String {
+        guard totalCost > 0 else { return "0%" }
+        return String(format: "%.1f%%", (cost / totalCost) * 100)
     }
 }
