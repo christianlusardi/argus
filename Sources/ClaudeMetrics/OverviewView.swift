@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import AppKit
 
 struct OverviewView: View {
     @EnvironmentObject var store: MetricsStore
@@ -326,6 +327,7 @@ struct DailyMessagesChart: View {
 struct OverviewDailyCostChart: View {
     @EnvironmentObject var store: MetricsStore
     @State private var selectedDate: Date? = nil
+    @State private var explainPoint: CostPoint? = nil
 
     struct CostPoint: Identifiable {
         let id: String
@@ -386,28 +388,278 @@ struct OverviewDailyCostChart: View {
         .chartPlotStyle { $0.background(Color.clear) }
         .chartOverlay { proxy in
             GeometryReader { geo in
-                if let sel = selectedDate,
-                   let p = closestPoint(to: sel),
-                   let plotAnchor = proxy.plotFrame {
+                if let plotAnchor = proxy.plotFrame {
                     let plotRect = geo[plotAnchor]
-                    let xPos = (proxy.position(forX: p.date) ?? 0) + plotRect.minX
-                    let yPos = (proxy.position(forY: p.cost) ?? 0) + plotRect.minY
 
-                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
-                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
-                    ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.appGold)
-                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(tooltipFmt.string(from: p.date))
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Color.appTextPrimary)
-                            Text(formatCost(p.cost))
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color.appGold)
+                    // Tap layer: convert click to closest point and open the explain popover.
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .frame(width: plotRect.width, height: plotRect.height)
+                        .position(x: plotRect.midX, y: plotRect.midY)
+                        .onTapGesture { location in
+                            let xInPlot = location.x - plotRect.minX
+                            guard let d: Date = proxy.value(atX: xInPlot) else { return }
+                            explainPoint = closestPoint(to: d)
                         }
+
+                    if let sel = selectedDate, let p = closestPoint(to: sel) {
+                        let xPos = (proxy.position(forX: p.date) ?? 0) + plotRect.minX
+                        let yPos = (proxy.position(forY: p.cost) ?? 0) + plotRect.minY
+
+                        ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                        ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
+                        ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.appGold)
+                        ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(tooltipFmt.string(from: p.date))
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.appTextPrimary)
+                                Text(formatCost(p.cost))
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Color.appGold)
+                                Text("click to explain")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(Color.appTextTertiary)
+                            }
+                        }
+                    }
+
+                    // Invisible popover anchor positioned at the clicked point.
+                    if let ep = explainPoint {
+                        let xPos = (proxy.position(forX: ep.date) ?? 0) + plotRect.minX
+                        let yPos = (proxy.position(forY: ep.cost) ?? 0) + plotRect.minY
+                        Color.clear
+                            .frame(width: 1, height: 1)
+                            .position(x: xPos, y: yPos)
+                            .popover(
+                                isPresented: Binding(
+                                    get: { explainPoint != nil },
+                                    set: { if !$0 { explainPoint = nil } }
+                                ),
+                                attachmentAnchor: .point(.center)
+                            ) {
+                                DailyCostExplainView(point: ep)
+                                    .environmentObject(store)
+                            }
                     }
                 }
             }
+        }
+    }
+}
+
+struct DailyCostExplainView: View {
+    @EnvironmentObject var store: MetricsStore
+    let point: OverviewDailyCostChart.CostPoint
+    @State private var copied = false
+
+    private let titleDateFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMM d, yyyy"; return f
+    }()
+
+    private var rawSQL: String {
+        var clauses = ""
+        if let af = store.accountFilter {
+            let safe = af.replacingOccurrences(of: "'", with: "''")
+            clauses += "\n  AND account_uuid = '\(safe)'"
+        }
+        if let pf = store.projectFilter {
+            let safe = pf.replacingOccurrences(of: "'", with: "''")
+            clauses += "\n  AND project = '\(safe)'"
+        }
+        return """
+        SELECT model,
+               SUM(input_tokens)        AS input_tokens,
+               SUM(output_tokens)       AS output_tokens,
+               SUM(cache_read_tokens)   AS cache_read,
+               SUM(cache_create_tokens) AS cache_write,
+               COUNT(*)                 AS messages,
+               ROUND(SUM(cost_usd), 4)  AS cost_usd
+        FROM messages
+        WHERE day = '\(point.id)'\(clauses)
+        GROUP BY model
+        ORDER BY cost_usd DESC;
+        """
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(titleDateFmt.string(from: point.date))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.appTextSecondary)
+                    Text(formatCost(point.cost))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.appGold)
+                }
+
+                if let exp = store.dailyCostExplanation(for: point.id) {
+                    if exp.totalMessages > 0 {
+                        Text("\(exp.totalMessages) message\(exp.totalMessages == 1 ? "" : "s") this day")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.appTextTertiary)
+                    }
+
+                    sectionHeader("Calculation")
+                    Text("Per-message cost = (in × p_in + out × p_out + cr × p_cr + cw × p_cw) / 1,000,000.  The chart point is the sum of all assistant messages on this day.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if !exp.modelLines.isEmpty {
+                        sectionHeader("By model")
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(exp.modelLines) { line in modelRow(line) }
+                        }
+                    }
+
+                    if !exp.projectLines.isEmpty {
+                        sectionHeader("By project")
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(exp.projectLines) { pr in
+                                HStack(spacing: 8) {
+                                    Text(pr.project)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color.appTextPrimary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                    Text("\(pr.messageCount) msg")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle(Color.appTextTertiary)
+                                    Text(formatCost(pr.costUSD))
+                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(Color.appTextPrimary)
+                                        .frame(width: 70, alignment: .trailing)
+                                }
+                            }
+                        }
+                    }
+
+                    sectionHeader("Source")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("~/.claude/projects/**/*.jsonl")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.appTextSecondary)
+                        Text("→ ~/.claude/argusai.db · messages table")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.appTextSecondary)
+                        Text("aggregated by queryDailyBreakdown() — GROUP BY day, model")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color.appTextTertiary)
+                        if let af = exp.accountFilter {
+                            Text("account filter: \(af)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color.appTextTertiary)
+                        }
+                        if let pf = exp.projectFilter {
+                            Text("project filter: \(pf)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color.appTextTertiary)
+                        }
+                    }
+
+                    HStack(alignment: .center) {
+                        sectionHeader("Raw SQL")
+                        Spacer()
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(rawSQL, forType: .string)
+                            copied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size: 10))
+                                Text(copied ? "Copied" : "Copy")
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            .foregroundStyle(copied ? Color.green : Color.appTextSecondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.appBorder, lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy SQL to clipboard")
+                    }
+                    Text(rawSQL)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.appTextPrimary)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.appSurface, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.appBorder, lineWidth: 0.5))
+                    Text("Run with:  sqlite3 ~/.claude/argusai.db")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Color.appTextTertiary)
+                } else {
+                    Text("No detail available for this day.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.appTextTertiary)
+                }
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 380, height: 560)
+        .background(Color.appBg)
+    }
+
+    @ViewBuilder
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Color.appTextSecondary)
+            .tracking(0.6)
+            .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private func modelRow(_ line: MetricsStore.DailyCostExplanation.ModelLine) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(line.displayName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.forModel(line.model))
+                Spacer()
+                Text(formatCost(line.costTotal))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Color.appGold)
+            }
+            costBreakLine("input",   tokens: line.inputTokens,       rate: line.price.inputPerMTok,     cost: line.costInput)
+            costBreakLine("output",  tokens: line.outputTokens,      rate: line.price.outputPerMTok,    cost: line.costOutput)
+            if line.cacheReadTokens > 0 {
+                costBreakLine("cache read",  tokens: line.cacheReadTokens,   rate: line.price.cacheReadPerMTok,  cost: line.costCacheRead)
+            }
+            if line.cacheCreateTokens > 0 {
+                costBreakLine("cache write", tokens: line.cacheCreateTokens, rate: line.price.cacheWritePerMTok, cost: line.costCacheCreate)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func costBreakLine(_ label: String, tokens: Int, rate: Double, cost: Double) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundStyle(Color.appTextSecondary)
+                .frame(width: 78, alignment: .leading)
+            Text(formatTokens(tokens))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.appTextSecondary)
+                .frame(width: 56, alignment: .trailing)
+            Text("× $\(String(format: "%g", rate))/M")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.appTextTertiary)
+            Spacer()
+            Text(formatCost(cost))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Color.appTextSecondary)
+                .frame(width: 64, alignment: .trailing)
         }
     }
 }
