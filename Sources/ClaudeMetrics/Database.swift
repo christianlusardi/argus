@@ -24,6 +24,10 @@ final class ArgusDB {
         try execSQL(schema)
         // Migration: add account_uuid to existing messages tables (silently ignored if already present)
         sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN account_uuid TEXT DEFAULT NULL", nil, nil, nil)
+        // Migration: add cwd to sessions and ai_lines to messages (silently ignored if already present)
+        sqlite3_exec(db, "ALTER TABLE sessions ADD COLUMN cwd TEXT DEFAULT ''", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN ai_lines INTEGER DEFAULT 0", nil, nil, nil)
+        backfillSessionCwds()
     }
 
     deinit { sqlite3_close(db) }
@@ -38,7 +42,8 @@ final class ArgusDB {
         CREATE TABLE IF NOT EXISTS sessions (
             session_id  TEXT PRIMARY KEY,
             project     TEXT NOT NULL DEFAULT 'unknown',
-            is_subagent INTEGER DEFAULT 0
+            is_subagent INTEGER DEFAULT 0,
+            cwd         TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS messages (
             file_path         TEXT NOT NULL,
@@ -56,7 +61,15 @@ final class ArgusDB {
             cost_usd          REAL    DEFAULT 0,
             project           TEXT NOT NULL DEFAULT 'unknown',
             is_subagent       INTEGER DEFAULT 0,
+            ai_lines          INTEGER DEFAULT 0,
             PRIMARY KEY (file_path, line_num)
+        );
+        CREATE TABLE IF NOT EXISTS git_stats_cache (
+            project     TEXT PRIMARY KEY,
+            cwd         TEXT NOT NULL DEFAULT '',
+            lines_added INTEGER DEFAULT 0,
+            head_hash   TEXT NOT NULL DEFAULT '',
+            updated_at  TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS tool_events (
             file_path  TEXT NOT NULL,
@@ -225,13 +238,13 @@ final class ArgusDB {
         try execSQL("BEGIN")
 
         let sessInsert = try prepare(
-            "INSERT OR IGNORE INTO sessions(session_id, project, is_subagent) VALUES(?,?,?)")
+            "INSERT OR IGNORE INTO sessions(session_id, project, is_subagent, cwd) VALUES(?,?,?,?)")
         let msgInsert  = try prepare("""
             INSERT OR REPLACE INTO messages
             (file_path,line_num,session_id,timestamp,day,hour,model,
              input_tokens,output_tokens,cache_read_tokens,cache_create_tokens,
-             web_searches,cost_usd,project,is_subagent,account_uuid)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             web_searches,cost_usd,project,is_subagent,account_uuid,ai_lines)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """)
         let toolInsert = try prepare(
             "INSERT OR IGNORE INTO tool_events(file_path,line_num,session_id,day,count) VALUES(?,?,?,?,?)")
@@ -267,6 +280,7 @@ final class ArgusDB {
                 bindTxt(sessInsert, 1, sid)
                 bindTxt(sessInsert, 2, proj)
                 bindInt(sessInsert, 3, isSubagent ? 1 : 0)
+                bindTxt(sessInsert, 4, cwd)
                 sqlite3_step(sessInsert)
                 sqlite3_reset(sessInsert)
                 sessionProjects[sid] = proj
@@ -297,6 +311,27 @@ final class ArgusDB {
                         $0["type"] as? String == "tool_use" && $0["name"] as? String == "WebSearch"
                     }.count
 
+                    // Count AI-written lines from Write/Edit/MultiEdit tool_use blocks
+                    let aiLines = contentBlocks.reduce(0) { sum, block in
+                        guard block["type"] as? String == "tool_use",
+                              let name = block["name"] as? String,
+                              let input = block["input"] as? [String: Any] else { return sum }
+                        switch name {
+                        case "Write":
+                            let c = input["content"] as? String ?? ""
+                            return sum + c.components(separatedBy: "\n").count
+                        case "Edit":
+                            let ns = input["new_string"] as? String ?? ""
+                            return sum + ns.components(separatedBy: "\n").count
+                        case "MultiEdit":
+                            let edits = input["edits"] as? [[String: Any]] ?? []
+                            return sum + edits.reduce(0) { s, e in
+                                s + ((e["new_string"] as? String ?? "").components(separatedBy: "\n").count)
+                            }
+                        default: return sum
+                        }
+                    }
+
                     guard input + output + cr + cc > 0 else { continue }
 
                     let hour = parseDate(ts).map { cal.component(.hour, from: $0) } ?? 0
@@ -313,6 +348,7 @@ final class ArgusDB {
                     bindInt(msgInsert, 15, isSubagent ? 1 : 0)
                     if let uuid = account?.accountUuid { bindTxt(msgInsert, 16, uuid) }
                     else { sqlite3_bind_null(msgInsert, 16) }
+                    bindInt(msgInsert, 17, aiLines)
                     sqlite3_step(msgInsert)
                     sqlite3_reset(msgInsert)
                 }
@@ -378,6 +414,7 @@ final class ArgusDB {
     // MARK: - Build StatsCache from DB
 
     func buildStatsCache() throws -> StatsCache {
+        try? updateGitStats()
         let (dailyTotals, dailyModelBreakdown) = try queryDailyBreakdown()
         let modelUsage          = try queryModelUsage()
         let dailyActivity       = try queryDailyActivity()
@@ -553,11 +590,16 @@ final class ArgusDB {
 
     private func queryProjectStats() throws -> [ProjectStats] {
         let stmt = try prepare("""
-            SELECT project,
-                SUM(input_tokens), SUM(output_tokens),
-                SUM(cache_read_tokens), SUM(cache_create_tokens), SUM(web_searches),
-                COUNT(DISTINCT session_id), COUNT(*), SUM(cost_usd)
-            FROM messages WHERE 1=1 \(af) GROUP BY project ORDER BY SUM(cost_usd) DESC
+            SELECT m.project,
+                SUM(m.input_tokens), SUM(m.output_tokens),
+                SUM(m.cache_read_tokens), SUM(m.cache_create_tokens), SUM(m.web_searches),
+                COUNT(DISTINCT m.session_id), COUNT(*), SUM(m.cost_usd),
+                SUM(m.ai_lines),
+                COALESCE(g.lines_added, 0)
+            FROM messages m
+            LEFT JOIN git_stats_cache g ON g.project = m.project
+            WHERE 1=1 \(af("m"))
+            GROUP BY m.project ORDER BY SUM(m.cost_usd) DESC
         """)
         defer { sqlite3_finalize(stmt) }
         var result: [ProjectStats] = []
@@ -567,7 +609,8 @@ final class ArgusDB {
                 inputTokens: colInt(stmt,1), outputTokens: colInt(stmt,2),
                 cacheReadInputTokens: colInt(stmt,3), cacheCreationInputTokens: colInt(stmt,4),
                 webSearchRequests: colInt(stmt,5), sessionCount: colInt(stmt,6),
-                messageCount: colInt(stmt,7), estimatedCostUSD: colDbl(stmt,8)))
+                messageCount: colInt(stmt,7), estimatedCostUSD: colDbl(stmt,8),
+                aiLinesWritten: colInt(stmt,9), gitLinesAdded: colInt(stmt,10)))
         }
         return result
     }
@@ -806,5 +849,137 @@ final class ArgusDB {
             ))
         }
         return result
+    }
+
+    // MARK: - Git stats
+
+    private func backfillSessionCwds() {
+        // One-time operation: read first line of each known JSONL file to populate sessions.cwd
+        var paths: [String] = []
+        if let s = try? prepare("SELECT path FROM ingested_files") {
+            while sqlite3_step(s) == SQLITE_ROW { paths.append(colTxt(s, 0)) }
+            sqlite3_finalize(s)
+        }
+        guard !paths.isEmpty,
+              let upd = try? prepare(
+                "UPDATE sessions SET cwd = ? WHERE session_id = ? AND (cwd = '' OR cwd IS NULL)")
+        else { return }
+        defer { sqlite3_finalize(upd) }
+        for path in paths {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                  let text = String(data: data, encoding: .utf8),
+                  let firstLine = text.split(separator: "\n", maxSplits: 1,
+                                             omittingEmptySubsequences: true).first else { continue }
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any],
+                  let sid = obj["sessionId"] as? String, !sid.isEmpty,
+                  let cwd = obj["cwd"] as? String, !cwd.isEmpty else { continue }
+            bindTxt(upd, 1, cwd); bindTxt(upd, 2, sid)
+            sqlite3_step(upd); sqlite3_reset(upd)
+        }
+    }
+
+    // One-time backfill: recompute ai_lines for all already-ingested messages.
+    // Reads each JSONL file once; guarded by UserDefaults so it only runs on first launch after upgrade.
+    func backfillAiLines() throws {
+        var paths: [String] = []
+        let s = try prepare("SELECT path FROM ingested_files")
+        while sqlite3_step(s) == SQLITE_ROW { paths.append(colTxt(s, 0)) }
+        sqlite3_finalize(s)
+        guard !paths.isEmpty else { return }
+
+        let upd = try prepare(
+            "UPDATE messages SET ai_lines = ? WHERE file_path = ? AND line_num = ? AND ai_lines = 0")
+        defer { sqlite3_finalize(upd) }
+
+        try execSQL("BEGIN")
+        for path in paths {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            for (i, line) in lines.enumerated() {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      obj["type"] as? String == "assistant",
+                      let msg = obj["message"] as? [String: Any],
+                      let content = msg["content"] as? [[String: Any]] else { continue }
+                let ai = content.reduce(0) { sum, block -> Int in
+                    guard block["type"] as? String == "tool_use",
+                          let name  = block["name"]  as? String,
+                          let input = block["input"] as? [String: Any] else { return sum }
+                    switch name {
+                    case "Write":
+                        return sum + (input["content"] as? String ?? "").components(separatedBy: "\n").count
+                    case "Edit":
+                        return sum + (input["new_string"] as? String ?? "").components(separatedBy: "\n").count
+                    case "MultiEdit":
+                        let edits = input["edits"] as? [[String: Any]] ?? []
+                        return sum + edits.reduce(0) {
+                            $0 + (($1["new_string"] as? String ?? "").components(separatedBy: "\n").count)
+                        }
+                    default: return sum
+                    }
+                }
+                guard ai > 0 else { continue }
+                bindInt(upd, 1, ai); bindTxt(upd, 2, path); bindInt(upd, 3, i + 1)
+                sqlite3_step(upd); sqlite3_reset(upd)
+            }
+        }
+        try execSQL("COMMIT")
+    }
+
+    func updateGitStats() throws {
+        // Collect distinct (project, cwd) pairs
+        let s = try prepare("SELECT DISTINCT project, cwd FROM sessions WHERE cwd != '' AND cwd IS NOT NULL")
+        var projects: [(String, String)] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            let p = colTxt(s, 0); let c = colTxt(s, 1)
+            if !p.isEmpty && !c.isEmpty { projects.append((p, c)) }
+        }
+        sqlite3_finalize(s)
+        guard !projects.isEmpty else { return }
+
+        // Load cached HEAD hashes
+        let cs = try prepare("SELECT project, head_hash FROM git_stats_cache")
+        var cached: [String: String] = [:]
+        while sqlite3_step(cs) == SQLITE_ROW { cached[colTxt(cs, 0)] = colTxt(cs, 1) }
+        sqlite3_finalize(cs)
+
+        let upsert = try prepare("""
+            INSERT OR REPLACE INTO git_stats_cache(project,cwd,lines_added,head_hash,updated_at)
+            VALUES(?,?,?,?,?)
+        """)
+        defer { sqlite3_finalize(upsert) }
+        let now = ISO8601DateFormatter().string(from: Date())
+
+        for (proj, cwd) in projects {
+            guard FileManager.default.fileExists(atPath: cwd) else { continue }
+            let head = gitRun(cwd: cwd, args: ["rev-parse", "HEAD"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !head.isEmpty, !head.hasPrefix("fatal") else { continue }
+            if cached[proj] == head { continue }  // no new commits
+
+            let linesAdded = gitLinesAdded(cwd: cwd)
+            bindTxt(upsert, 1, proj); bindTxt(upsert, 2, cwd)
+            bindInt(upsert, 3, linesAdded); bindTxt(upsert, 4, head); bindTxt(upsert, 5, now)
+            sqlite3_step(upsert); sqlite3_reset(upsert)
+        }
+    }
+
+    private func gitRun(cwd: String, args: [String]) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        p.arguments = ["-C", cwd] + args
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        guard (try? p.run()) != nil else { return "" }
+        p.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    }
+
+    private func gitLinesAdded(cwd: String) -> Int {
+        let out = gitRun(cwd: cwd, args: ["log", "--numstat", "--pretty=", "--no-merges"])
+        return out.split(separator: "\n").reduce(0) { sum, line in
+            let parts = line.split(separator: "\t")
+            guard parts.count >= 2, parts[0] != "-", let n = Int(parts[0]) else { return sum }
+            return sum + n
+        }
     }
 }

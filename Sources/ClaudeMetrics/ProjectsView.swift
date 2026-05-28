@@ -183,6 +183,8 @@ struct ProjectTable: View {
                 Text("OUTPUT")    .frame(width: 75, alignment: .trailing)
                 Text("COST")      .frame(width: 75, alignment: .trailing)
                 Text("WEB")       .frame(width: 45, alignment: .trailing)
+                Text("AI LINES")  .frame(width: 75, alignment: .trailing)
+                Text("% AI")      .frame(width: 55, alignment: .trailing)
             }
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(Color.appTextTertiary)
@@ -215,6 +217,14 @@ struct ProjectTable: View {
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Color.appTextTertiary)
                         .frame(width: 45, alignment: .trailing)
+                    Text(proj.aiLinesWritten > 0 ? formatTokens(proj.aiLinesWritten) : "—")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Color.appTextSecondary)
+                        .frame(width: 75, alignment: .trailing)
+                    Text(proj.gitLinesAdded > 0 ? String(format: "%.0f%%", proj.aiCodePct * 100) : "—")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(proj.aiCodePct > 0 ? Color.appAccent : Color.appTextTertiary)
+                        .frame(width: 55, alignment: .trailing)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)

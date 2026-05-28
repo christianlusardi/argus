@@ -58,6 +58,13 @@ struct ProjectStats: Codable, Identifiable {
     let sessionCount: Int
     let messageCount: Int
     let estimatedCostUSD: Double
+    let aiLinesWritten: Int    // lines written by AI via Write/Edit/MultiEdit tool_use
+    let gitLinesAdded: Int     // total lines added in git history (all-time)
+
+    var aiCodePct: Double {
+        guard gitLinesAdded > 0 else { return 0 }
+        return min(1.0, Double(aiLinesWritten) / Double(gitLinesAdded))
+    }
 }
 
 struct DailyWorkHours: Codable, Identifiable {

@@ -44,6 +44,15 @@ struct PlatformView: View {
                             detail: "rated via /rate"
                         )
                     }
+                    if let pct = store.filteredAICodePct {
+                        MetricCard(
+                            icon: "chevron.left.forwardslash.chevron.right",
+                            iconColor: .modelSonnet,
+                            label: "Code from AI",
+                            value: String(format: "%.0f%%", pct * 100),
+                            detail: "of git committed lines"
+                        )
+                    }
                 }
 
                 // Row 2: token cards

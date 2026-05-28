@@ -217,6 +217,12 @@ class MetricsStore: ObservableObject {
         let feedbackURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/argusai_feedback.jsonl")
         try? db.ingestFeedback(at: feedbackURL)
+        // One-shot: backfill ai_lines for previously-ingested messages
+        let aiBackfillKey = "argusai.aiLinesBackfillDone"
+        if !UserDefaults.standard.bool(forKey: aiBackfillKey) {
+            try? db.backfillAiLines()
+            UserDefaults.standard.set(true, forKey: aiBackfillKey)
+        }
         db.accountFilter = currentFilter
         let cache = try db.buildStatsCache()
         if let accounts = cache.knownAccountsList {
@@ -767,15 +773,29 @@ class MetricsStore: ObservableObject {
             for (proj, v) in day.messages    { messages[proj]    = (messages[proj]    ?? 0) + v }
             for (proj, v) in day.webSearches { webSearches[proj] = (webSearches[proj] ?? 0) + v }
         }
+        // AI code stats are all-time (git history + cumulative writes), indexed by project name
+        let aiStats: [String: (Int, Int)] = Dictionary(uniqueKeysWithValues:
+            (stats?.projectStats ?? []).map { ($0.project, ($0.aiLinesWritten, $0.gitLinesAdded)) }
+        )
         return costs.keys.map { proj in
-            ProjectStats(project: proj,
-                         inputTokens: 0, outputTokens: outputs[proj] ?? 0,
-                         cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
-                         webSearchRequests: webSearches[proj] ?? 0,
-                         sessionCount: 0,
-                         messageCount: messages[proj] ?? 0,
-                         estimatedCostUSD: costs[proj] ?? 0)
+            let (aiLines, gitLines) = aiStats[proj] ?? (0, 0)
+            return ProjectStats(project: proj,
+                                inputTokens: 0, outputTokens: outputs[proj] ?? 0,
+                                cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+                                webSearchRequests: webSearches[proj] ?? 0,
+                                sessionCount: 0, messageCount: messages[proj] ?? 0,
+                                estimatedCostUSD: costs[proj] ?? 0,
+                                aiLinesWritten: aiLines, gitLinesAdded: gitLines)
         }.sorted { $0.estimatedCostUSD > $1.estimatedCostUSD }
+    }
+
+    var filteredAICodePct: Double? {
+        let projects = filteredSortedProjects.filter { $0.gitLinesAdded > 0 }
+        guard !projects.isEmpty else { return nil }
+        let ai  = projects.reduce(0) { $0 + $1.aiLinesWritten }
+        let git = projects.reduce(0) { $0 + $1.gitLinesAdded }
+        guard git > 0 else { return nil }
+        return min(1.0, Double(ai) / Double(git))
     }
 
     // Daily costs (all-time, for all-time charts in Models tab)
