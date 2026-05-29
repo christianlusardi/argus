@@ -5,6 +5,7 @@ struct SessionsView: View {
 
     @State private var sortKey: SessionSortKey = .date
     @State private var sortAsc: Bool = false
+    @State private var selectedSession: SessionSummary? = nil
 
     enum SessionSortKey { case date, messages, output, cost }
 
@@ -99,7 +100,10 @@ struct SessionsView: View {
                             Color.appBorder.frame(height: 1)
 
                             ForEach(sortedSessions) { session in
-                                SessionRow(session: session)
+                                Button { selectedSession = session } label: {
+                                    SessionRow(session: session)
+                                }
+                                .buttonStyle(.plain)
                                 Color.appBorder.frame(height: 1).opacity(0.5)
                             }
 
@@ -120,6 +124,9 @@ struct SessionsView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color.appBg)
+        .sheet(item: $selectedSession) { session in
+            SessionDetailView(session: session).environmentObject(store)
+        }
     }
 }
 
@@ -189,6 +196,7 @@ struct SessionRow: View {
                 .frame(width: 60, alignment: .center)
         }
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
     }
 }
 

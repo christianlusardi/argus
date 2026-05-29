@@ -9,7 +9,6 @@ struct ClaudeMetricsApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
-                .preferredColorScheme(.dark)
                 .frame(minWidth: 900, idealWidth: 1100, minHeight: 600, idealHeight: 720)
         }
         .windowStyle(.hiddenTitleBar)
@@ -45,6 +44,11 @@ struct ClaudeMetricsApp: App {
             }
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environmentObject(store)
+        }
     }
 }
 

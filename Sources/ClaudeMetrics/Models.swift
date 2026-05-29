@@ -121,6 +121,25 @@ struct SessionSummary: Codable, Identifiable {
     let rating: Int?   // 1-5 from /rate skill, nil if not yet rated
 }
 
+struct SessionMessageDetail: Identifiable {
+    var id: String { timestamp }
+    let timestamp: String
+    let model: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheCreateTokens: Int
+    let webSearches: Int
+    let costUSD: Double
+    let aiLines: Int
+
+    var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens }
+    var formattedTime: String {
+        guard timestamp.count >= 19 else { return timestamp }
+        return String(timestamp[timestamp.index(timestamp.startIndex, offsetBy: 11)..<timestamp.index(timestamp.startIndex, offsetBy: 19)])
+    }
+}
+
 struct StatsCache: Codable {
     let version: Int?
     let lastComputedDate: String?
@@ -187,6 +206,11 @@ struct TokenChartPoint: Identifiable {
     let costUSD: Double
 }
 
+struct ProjectAlertThreshold: Codable {
+    let project: String
+    var monthlyLimit: Double
+}
+
 struct ModelPricingTable {
     struct Price {
         let inputPerMTok: Double
@@ -217,8 +241,30 @@ struct ModelPricingTable {
         "claude-haiku-4-5-20251001":  Price(inputPerMTok: 0.80, outputPerMTok: 4.0,  cacheReadPerMTok: 0.08,  cacheWritePerMTok: 1.0),
     ]
 
+    // External overrides loaded once from ~/.claude/argus_pricing.json
+    // Format: { "model-id": { "inputPerMTok": 3.0, "outputPerMTok": 15.0, "cacheReadPerMTok": 0.30, "cacheWritePerMTok": 3.75 } }
+    static var externalOverrides: [String: Price] = {
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/argus_pricing.json")
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Double]]
+        else { return [:] }
+        var result: [String: Price] = [:]
+        for (model, d) in json {
+            guard let i = d["inputPerMTok"], let o = d["outputPerMTok"],
+                  let cr = d["cacheReadPerMTok"], let cw = d["cacheWritePerMTok"]
+            else { continue }
+            result[model] = Price(inputPerMTok: i, outputPerMTok: o, cacheReadPerMTok: cr, cacheWritePerMTok: cw)
+        }
+        return result
+    }()
+
     static func price(for model: String) -> Price {
+        if let p = externalOverrides[model] { return p }
         if let p = table[model] { return p }
+        for (key, p) in externalOverrides {
+            if model.hasPrefix(key.components(separatedBy: "-").prefix(3).joined(separator: "-")) { return p }
+        }
         for (key, p) in table {
             if model.hasPrefix(key.components(separatedBy: "-").prefix(3).joined(separator: "-")) { return p }
         }

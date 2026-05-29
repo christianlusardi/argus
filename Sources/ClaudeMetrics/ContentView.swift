@@ -43,6 +43,15 @@ enum NavSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject var store: MetricsStore
     @State private var selected: NavSection = .overview
+    @AppStorage("argusai.colorScheme") private var colorSchemePref: String = "system"
+
+    private var preferredColorScheme: ColorScheme? {
+        switch colorSchemePref {
+        case "dark":  return .dark
+        case "light": return .light
+        default:      return nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -59,6 +68,8 @@ struct ContentView: View {
                         LoadingView()
                     } else if let err = store.error {
                         ErrorView(message: err)
+                    } else if store.stats == nil && !store.isLoading {
+                        OnboardingView()
                     } else {
                         switch selected {
                         case .overview: OverviewView()
@@ -77,6 +88,7 @@ struct ContentView: View {
         .background(Color.appBg)
         .ignoresSafeArea()
         .background { WindowConfigurator() }
+        .preferredColorScheme(preferredColorScheme)
     }
 }
 
@@ -383,5 +395,54 @@ struct NavButton: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct OnboardingView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "waveform.circle")
+                .font(.system(size: 64))
+                .foregroundStyle(Color.appAccent)
+
+            VStack(spacing: 8) {
+                Text("No data yet")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color.appTextPrimary)
+                Text("ArgusAI reads your Claude Code session files automatically.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appTextSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                OnboardingStep(number: "1", text: "Install Claude Code from claude.ai/code")
+                OnboardingStep(number: "2", text: "Run Claude Code in any terminal — start a conversation")
+                OnboardingStep(number: "3", text: "ArgusAI detects sessions in ~/.claude/projects and shows metrics here")
+            }
+            .padding(20)
+            .background(Color.appSurface.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct OnboardingStep: View {
+    let number: String
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.appBg)
+                .frame(width: 22, height: 22)
+                .background(Color.appAccent)
+                .clipShape(Circle())
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(Color.appTextSecondary)
+        }
     }
 }

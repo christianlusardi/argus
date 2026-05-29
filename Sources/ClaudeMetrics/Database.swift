@@ -1,6 +1,20 @@
 import Foundation
 import CSQLite
 
+// MARK: - MessageDetail
+
+struct MessageDetail {
+    let timestamp: String
+    let model: String
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadTokens: Int
+    let cacheCreateTokens: Int
+    let webSearches: Int
+    let costUSD: Double
+    let aiLines: Int
+}
+
 // MARK: - ArgusDB
 
 final class ArgusDB {
@@ -27,6 +41,23 @@ final class ArgusDB {
         // Migration: add cwd to sessions and ai_lines to messages (silently ignored if already present)
         sqlite3_exec(db, "ALTER TABLE sessions ADD COLUMN cwd TEXT DEFAULT ''", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN ai_lines INTEGER DEFAULT 0", nil, nil, nil)
+        sqlite3_exec(db, "ALTER TABLE messages ADD COLUMN request_id TEXT NOT NULL DEFAULT ''", nil, nil, nil)
+        // One-time: remove duplicate rows caused by Claude Code writing the same requestId twice.
+        // Uses (session_id, timestamp) to identify duplicates because request_id is empty on
+        // existing rows (the column was just added). Future ingestions skip duplicates via
+        // seenRequestIds in ingestFiles(), so this only needs to run once.
+        if !UserDefaults.standard.bool(forKey: "argusai.dedupRequestIds.v1") {
+            sqlite3_exec(db, """
+                DELETE FROM messages
+                WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM messages
+                    WHERE timestamp != ''
+                    GROUP BY session_id, timestamp
+                )
+                AND timestamp != ''
+                """, nil, nil, nil)
+            UserDefaults.standard.set(true, forKey: "argusai.dedupRequestIds.v1")
+        }
         sqlite3_exec(db, "ALTER TABLE git_stats_cache ADD COLUMN since_date TEXT DEFAULT ''", nil, nil, nil)
         sqlite3_exec(db, "ALTER TABLE git_stats_cache ADD COLUMN session_lines INTEGER DEFAULT 0", nil, nil, nil)
         // One-time: clear git_stats_cache to force recomputation with session-window-based numerator
@@ -69,6 +100,7 @@ final class ArgusDB {
             project           TEXT NOT NULL DEFAULT 'unknown',
             is_subagent       INTEGER DEFAULT 0,
             ai_lines          INTEGER DEFAULT 0,
+            request_id        TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (file_path, line_num)
         );
         CREATE TABLE IF NOT EXISTS git_stats_cache (
@@ -257,8 +289,8 @@ final class ArgusDB {
             INSERT OR REPLACE INTO messages
             (file_path,line_num,session_id,timestamp,day,hour,model,
              input_tokens,output_tokens,cache_read_tokens,cache_create_tokens,
-             web_searches,cost_usd,project,is_subagent,account_uuid,ai_lines)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             web_searches,cost_usd,project,is_subagent,account_uuid,ai_lines,request_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """)
         let toolInsert = try prepare(
             "INSERT OR IGNORE INTO tool_events(file_path,line_num,session_id,day,count) VALUES(?,?,?,?,?)")
@@ -301,6 +333,18 @@ final class ArgusDB {
             }
 
             // Pass 2: insert messages and tool events
+            // Track requestIds seen in this batch to skip Claude Code's duplicate writes
+            // (same API call can appear on two consecutive JSONL lines with different UUIDs)
+            var seenRequestIds = Set<String>()
+            // Pre-load requestIds already in DB for this file to prevent cross-run duplicates
+            let rq = try? prepare("SELECT request_id FROM messages WHERE file_path = ? AND request_id != ''")
+            if let rq = rq {
+                sqlite3_bind_text(rq, 1, (path as NSString).utf8String, -1, nil)
+                while sqlite3_step(rq) == SQLITE_ROW {
+                    if let cstr = sqlite3_column_text(rq, 0) { seenRequestIds.insert(String(cString: cstr)) }
+                }
+                sqlite3_finalize(rq)
+            }
             var lineNum = startLine
             for line in newLines {
                 lineNum += 1
@@ -312,6 +356,14 @@ final class ArgusDB {
                 let day  = ts.isEmpty ? "" : String(ts.prefix(10))
 
                 if type == "assistant", let msg = obj["message"] as? [String: Any] {
+                    let reqId = obj["requestId"] as? String ?? ""
+
+                    // Skip duplicate: same Anthropic request already ingested from this file
+                    if !reqId.isEmpty {
+                        if seenRequestIds.contains(reqId) { continue }
+                        seenRequestIds.insert(reqId)
+                    }
+
                     let model  = msg["model"] as? String ?? "unknown"
                     let usage  = msg["usage"] as? [String: Any] ?? [:]
                     let input  = usage["input_tokens"]                as? Int ?? 0
@@ -367,6 +419,7 @@ final class ArgusDB {
                     if let uuid = account?.accountUuid { bindTxt(msgInsert, 16, uuid) }
                     else { sqlite3_bind_null(msgInsert, 16) }
                     bindInt(msgInsert, 17, aiLines)
+                    bindTxt(msgInsert, 18, reqId)
                     sqlite3_step(msgInsert)
                     sqlite3_reset(msgInsert)
                 }
@@ -768,6 +821,33 @@ final class ArgusDB {
                 isSubagent: colInt(stmt, 6) == 1,
                 topModel: colTxt(stmt, 7),
                 rating: rating
+            ))
+        }
+        return result
+    }
+
+    func querySessionMessages(sessionId: String) throws -> [MessageDetail] {
+        let stmt = try prepare("""
+            SELECT timestamp, model, input_tokens, output_tokens,
+                   cache_read_tokens, cache_create_tokens, web_searches, cost_usd, ai_lines
+            FROM messages
+            WHERE session_id = ? AND timestamp != ''
+            ORDER BY timestamp ASC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+        var result: [MessageDetail] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            result.append(MessageDetail(
+                timestamp:         colTxt(stmt, 0),
+                model:             colTxt(stmt, 1),
+                inputTokens:       colInt(stmt, 2),
+                outputTokens:      colInt(stmt, 3),
+                cacheReadTokens:   colInt(stmt, 4),
+                cacheCreateTokens: colInt(stmt, 5),
+                webSearches:       colInt(stmt, 6),
+                costUSD:           colDbl(stmt, 7),
+                aiLines:           colInt(stmt, 8)
             ))
         }
         return result

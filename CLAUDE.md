@@ -1,6 +1,6 @@
 # ArgusAI
 
-Native macOS dark-themed app that monitors Claude Code usage metrics in real time.
+Native macOS app (dark/light adaptive) that monitors Claude Code usage metrics in real time.
 
 ## Build & Run
 
@@ -34,19 +34,21 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | File | Role |
 |---|---|
-| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, `DailyAccountCosts`, …) |
+| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, `DailyAccountCosts`, `SessionMessageDetail`, `ProjectAlertThreshold`, …) |
 | `Database.swift` | `ArgusDB` — SQLite ingestion + all KPI queries; owns `~/.claude/argusai.db` |
 | `MetricsStore.swift` | `ObservableObject` — calls `ArgusDB`, owns all state and computed properties |
-| `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum) |
+| `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum); `OnboardingView` for first-run empty state |
 | `OverviewView.swift` | Summary KPIs + charts; `DailyCostExplainView` popover (click-to-explain on Daily Cost chart) |
 | `ModelsView.swift` | Per-model token breakdown |
 | `ActivityView.swift` | Daily activity chart, day-of-week, streak |
 | `ScheduleView.swift` | Hourly distribution, top hours, work-hour bars |
 | `ProjectsView.swift` | Per-project cost/token table and chart |
-| `SessionsView.swift` | Per-session table (id, project, date, msgs, output, cost, model, sub badge) |
+| `SessionsView.swift` | Per-session table; click any row → `SessionDetailView` sheet |
+| `SessionDetailView.swift` | Per-message breakdown sheet (TIME/MODEL/INPUT/OUTPUT/CACHE R/CACHE W/COST/AI LINES + totals footer) |
+| `SettingsView.swift` | Cmd+, preferences window: General (color scheme), Alerts (global + per-project), Pricing (table + external file status) |
 | `PlatformView.swift` | Platform KPIs tab (operational metrics, response time, cost per user) |
 | `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, `ChartCrosshair`, …) |
-| `Theme.swift` | Color palette, `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
+| `Theme.swift` | Adaptive color palette via `NSColor(dynamicProvider:)`; `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
 | `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
 
 ## Data pipeline
@@ -59,6 +61,8 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 - `ArgusDB` tracks `lines_processed` per file in the `ingested_files` table — only new lines are read on each 3s refresh.
 - All KPI queries run as SQL against indexed tables; **never re-parse JSONL in Swift**.
 - Ingestion uses `INSERT OR REPLACE` (not `INSERT OR IGNORE`) so that corrected fields (e.g. `web_searches`) are always up to date on re-ingest.
+- **Dedup**: Claude Code sometimes writes the same API response twice to the same JSONL (identical `requestId`, consecutive lines). `ingestFiles()` uses a `seenRequestIds: Set<String>` per file, pre-seeded from the DB, to skip duplicates across refresh cycles. A one-time migration (`argusai.dedupRequestIds.v1`) cleaned up historical duplicates using `(session_id, timestamp)`.
+- **Cost estimation**: JSONL files do NOT contain a `costUSD` field. ArgusAI estimates costs using `ModelPricingTable` (public API prices). Actual billing may differ by ~10–15% due to plan pricing, billing cycle, or cache tier differences. An external override file `~/.claude/argus_pricing.json` can override per-model prices.
 
 ### Adding a new data point
 
@@ -72,7 +76,7 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | Table | Key columns |
 |---|---|
-| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` · `account_uuid` |
+| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` · `account_uuid` · `request_id` |
 | `sessions` | `session_id` PK · `project` · `is_subagent` |
 | `tool_events` | `(file_path, line_num)` PK · `session_id` · `day` · `count` |
 | `user_turns` | `(file_path, line_num)` PK · `session_id` · `timestamp` · `day` — human-typed messages, used for response time |
@@ -206,6 +210,12 @@ Key per-day structures stored in `StatsCache`:
 | **Custom date range** | "Da / Al" `DatePicker` rows in sidebar (indented under "Custom" `SidebarFilterRow`); selecting a date activates `.custom` filter; clicking a preset deactivates it |
 | **Chart crosshair** | `ChartCrosshair` helper in `Components.swift` — vertical + horizontal dashed lines, intersection dot, floating tooltip; applied to all line charts (Daily Messages, Daily Cost, Daily Cost Trend, Output/Context Ratio, Token Trend) |
 | **Click-to-explain** | `DailyCostExplainView` popover in `OverviewView.swift`; clicking the Daily Cost chart opens a breakdown by model + project, raw SQL, copy button |
+| **Session detail view** | Click any row in Sessions tab → `SessionDetailView` sheet; per-message breakdown (time, model, all token types, cost, ai_lines); footer row with session totals; data from `ArgusDB.querySessionMessages(sessionId:)` |
+| **Settings window** | `SettingsView.swift` — Cmd+,; three tabs: General (color scheme System/Dark/Light via `@AppStorage("argusai.colorScheme")`), Alerts (global daily + per-project monthly thresholds), Pricing (built-in price table + external file `~/.claude/argus_pricing.json` status + estimate disclaimer) |
+| **Per-project monthly alerts** | `store.projectAlertThresholds: [String: Double]` (UserDefaults JSON); `checkAlerts()` fires once per month per project when spend ≥ limit; key pattern `argusai.projectAlert.<project>.<yyyy-MM>` |
+| **External pricing override** | `~/.claude/argus_pricing.json` — JSON object `{ "model-id": { inputPerMTok, outputPerMTok, cacheReadPerMTok, cacheWritePerMTok } }`; loaded once at startup into `ModelPricingTable.externalOverrides`; restart app to apply |
+| **Dark/Light mode** | Colors in `Theme.swift` use `NSColor(name:dynamicProvider:)` to adapt to system appearance; user can force dark/light via Settings → General; `ContentView` applies `.preferredColorScheme()` from `@AppStorage("argusai.colorScheme")` |
+| **Onboarding** | `OnboardingView` shown when `store.stats == nil && !store.isLoading` — 3-step numbered guide to get started with Claude Code |
 
 ### Platform tab — Cost per User
 Uses `filteredAccountCosts: [AccountCostBreakdown]` computed from `DailyAccountCosts` (per-day, per-account cost + message counts). This ensures the "Today" filter shows only today's cost, not the all-time total. `AccountCostBreakdown` carries both `costUSD` and `messageCount`.
@@ -236,3 +246,25 @@ Silent refresh never shows the loading spinner; only the very first load does.
 
 `ModelPricingTable` in `Models.swift` maps model IDs to per-MTok prices.  
 Use `ModelPricingTable.price(for: model).cost(input:output:cr:cc:)` for cost computation.
+
+`externalOverrides` is loaded once at startup from `~/.claude/argus_pricing.json` (if present). Format:
+```json
+{ "claude-sonnet-4-6": { "inputPerMTok": 3.0, "outputPerMTok": 15.0, "cacheReadPerMTok": 0.30, "cacheWritePerMTok": 3.75 } }
+```
+
+**Note on accuracy**: JSONL files have no `costUSD` field — all costs are estimates from the price table. Actual billing can differ by ~10–15% (billing cycle mismatch, plan-specific rates, cache tier pricing). The Pricing tab in Settings shows this disclaimer to users.
+
+## Plain buttons on macOS
+
+With `.buttonStyle(.plain)`, SwiftUI only hits the text content — not empty space. **Always add `.contentShape(Rectangle())`** to the label view of any plain-style button that must be tappable across its full area (rows, nav items, filter rows).
+
+## Color scheme
+
+`Theme.swift` uses `NSColor(name:dynamicProvider:)` for all semantic colors. To add a new adaptive color:
+```swift
+static let appMyColor = Color(NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)  // dark
+        : NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1)  // light
+})
+```

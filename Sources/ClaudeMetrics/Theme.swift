@@ -1,16 +1,51 @@
 import SwiftUI
+import AppKit
 
 extension Color {
-    static let appBg          = Color(red: 0.047, green: 0.047, blue: 0.063)
-    static let appSidebar     = Color(red: 0.055, green: 0.055, blue: 0.075)
-    static let appSurface     = Color(red: 0.086, green: 0.086, blue: 0.110)
-    static let appBorder      = Color(red: 0.145, green: 0.145, blue: 0.188)
-    static let appAccent      = Color(red: 0.486, green: 0.416, blue: 0.969)
-    static let appGold        = Color(red: 0.950, green: 0.780, blue: 0.220)
+    static let appBg = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.047, green: 0.047, blue: 0.063, alpha: 1)
+            : NSColor(srgbRed: 0.96,  green: 0.96,  blue: 0.97,  alpha: 1)
+    })
 
-    static let appTextPrimary   = Color.white
-    static let appTextSecondary = Color(white: 0.55)
-    static let appTextTertiary  = Color(white: 0.35)
+    static let appSidebar = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.055, green: 0.055, blue: 0.075, alpha: 1)
+            : NSColor(srgbRed: 0.93,  green: 0.93,  blue: 0.95,  alpha: 1)
+    })
+
+    static let appSurface = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.086, green: 0.086, blue: 0.110, alpha: 1)
+            : NSColor(srgbRed: 0.99,  green: 0.99,  blue: 1.00,  alpha: 1)
+    })
+
+    static let appBorder = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.145, green: 0.145, blue: 0.188, alpha: 1)
+            : NSColor(srgbRed: 0.86,  green: 0.86,  blue: 0.90,  alpha: 1)
+    })
+
+    static let appTextPrimary = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 1.0, alpha: 1)
+            : NSColor(srgbRed: 0.10, green: 0.10, blue: 0.12, alpha: 1)
+    })
+
+    static let appTextSecondary = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.55, alpha: 1)
+            : NSColor(srgbRed: 0.40, green: 0.40, blue: 0.44, alpha: 1)
+    })
+
+    static let appTextTertiary = Color(NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.35, alpha: 1)
+            : NSColor(srgbRed: 0.60, green: 0.60, blue: 0.64, alpha: 1)
+    })
+
+    static let appAccent  = Color(red: 0.486, green: 0.416, blue: 0.969)
+    static let appGold    = Color(red: 0.950, green: 0.780, blue: 0.220)
 
     static let modelOpus   = Color(red: 0.612, green: 0.384, blue: 0.922)
     static let modelSonnet = Color(red: 0.275, green: 0.565, blue: 0.902)

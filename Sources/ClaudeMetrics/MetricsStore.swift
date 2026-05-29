@@ -36,6 +36,18 @@ class MetricsStore: ObservableObject {
         didSet { if oldValue != projectFilter { loadData(silent: true) } }
     }
     @Published var knownProjects: [String] = []
+    @Published var projectAlertThresholds: [String: Double] = {
+        guard let data = UserDefaults.standard.data(forKey: "argusai.projectAlertThresholds"),
+              let decoded = try? JSONDecoder().decode([String: Double].self, from: data)
+        else { return [:] }
+        return decoded
+    }() {
+        didSet {
+            if let data = try? JSONEncoder().encode(projectAlertThresholds) {
+                UserDefaults.standard.set(data, forKey: "argusai.projectAlertThresholds")
+            }
+        }
+    }
 
     private let projectsURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".claude/projects")
@@ -1379,6 +1391,26 @@ class MetricsStore: ObservableObject {
         let req = UNNotificationRequest(identifier: "argusai.dailylimit.\(todayStr)",
                                         content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+
+        // Per-project monthly alerts
+        let fmt2 = DateFormatter(); fmt2.dateFormat = "yyyy-MM"
+        let thisMonth = fmt2.string(from: Date())
+        for (project, limit) in projectAlertThresholds where limit > 0 {
+            let projectCost = filteredProjectMonthlyCost(project: project)
+            guard projectCost >= limit else { continue }
+            let alertKey = "argusai.projectAlert.\(project).\(thisMonth)"
+            guard UserDefaults.standard.string(forKey: alertKey) == nil else { continue }
+            UserDefaults.standard.set(thisMonth, forKey: alertKey)
+            let pc = UNMutableNotificationContent()
+            pc.title = "ArgusAI: Project Budget Reached"
+            pc.body = String(format: "Project \u{201C}%@\u{201D} has spent %@ this month (limit: %@)",
+                             project, formatCost(projectCost), formatCost(limit))
+            pc.sound = .default
+            let preq = UNNotificationRequest(
+                identifier: "argusai.projectlimit.\(project).\(thisMonth)",
+                content: pc, trigger: nil)
+            UNUserNotificationCenter.current().add(preq, withCompletionHandler: nil)
+        }
     }
 
     private var filteredTotalCostToday: Double {
@@ -1387,6 +1419,34 @@ class MetricsStore: ObservableObject {
         return (stats?.dailyTotals ?? [])
             .filter { (fmt.date(from: $0.date) ?? .distantPast) >= start }
             .reduce(0.0) { $0 + $1.estimatedCostUSD }
+    }
+
+    private func filteredProjectMonthlyCost(project: String) -> Double {
+        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
+        let cal = Calendar.current
+        let start = cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
+        let rows: [DailyProjectCosts] = stats?.dailyProjectCosts ?? []
+        return rows
+            .filter { (fmt.date(from: $0.date) ?? .distantPast) >= start }
+            .reduce(into: 0.0) { $0 += $1.costs[project] ?? 0.0 }
+    }
+
+    func loadSessionMessages(sessionId: String) -> [SessionMessageDetail] {
+        guard let db else { return [] }
+        let raw = (try? db.querySessionMessages(sessionId: sessionId)) ?? []
+        return raw.map { m in
+            SessionMessageDetail(
+                timestamp: m.timestamp,
+                model: m.model,
+                inputTokens: m.inputTokens,
+                outputTokens: m.outputTokens,
+                cacheReadTokens: m.cacheReadTokens,
+                cacheCreateTokens: m.cacheCreateTokens,
+                webSearches: m.webSearches,
+                costUSD: m.costUSD,
+                aiLines: m.aiLines
+            )
+        }
     }
 
     // MARK: - Export CSV
