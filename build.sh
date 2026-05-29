@@ -1,5 +1,12 @@
 #!/bin/bash
-set -e
+
+# - `set -e`: manda in errore l'intero script se un comando fallisce.
+# - `set -u`: considera le variabili non dichiarate come in errore
+# - `set -x`: fa echo dei comandi eseguiti
+# - `set -f`: disabilita il globbing (filename expansion, ovvero `*.*`). **Attenzione** che lo script non ne abbia bisogno
+# - `-o pipefail`: manda in errore il comando se un comando interno ad una catena di pipe va in errore
+# set -eux -o pipefail
+set -eu -o pipefail
 
 APP="ArgusAI.app"
 BUNDLE="$APP/Contents/MacOS"
