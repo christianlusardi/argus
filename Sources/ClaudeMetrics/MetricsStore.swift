@@ -15,6 +15,11 @@ enum DateFilter: String, CaseIterable {
 }
 
 class MetricsStore: ObservableObject {
+    // Keychain reads trigger a macOS permission dialog on every access when
+    // the app isn't persistently authorized. Cache the result for the session
+    // so we hit the keychain only once (API keys don't change during a run).
+    private var _keychainKeyCache: (attempted: Bool, key: String?) = (false, nil)
+
     @Published var stats: StatsCache?
     @Published var isLoading = false
     @Published var error: String?
@@ -36,6 +41,8 @@ class MetricsStore: ObservableObject {
         didSet { if oldValue != projectFilter { loadData(silent: true) } }
     }
     @Published var knownProjects: [String] = []
+    @Published var showingExport: Bool = false
+    let drive = GoogleDriveService()
     @Published var projectAlertThresholds: [String: Double] = {
         guard let data = UserDefaults.standard.data(forKey: "argusai.projectAlertThresholds"),
               let decoded = try? JSONDecoder().decode([String: Double].self, from: data)
@@ -189,6 +196,8 @@ class MetricsStore: ObservableObject {
     }
 
     private func readKeychainAPIKey() -> String? {
+        if _keychainKeyCache.attempted { return _keychainKeyCache.key }
+        var found: String? = nil
         for service in ["Claude Code", "Claude Code-credentials"] {
             let query: [String: Any] = [
                 kSecClass as String:       kSecClassGenericPassword,
@@ -201,10 +210,12 @@ class MetricsStore: ObservableObject {
                let data = item as? Data,
                let key = String(data: data, encoding: .utf8),
                key.hasPrefix("sk-") {
-                return key
+                found = key
+                break
             }
         }
-        return nil
+        _keychainKeyCache = (true, found)
+        return found
     }
 
     private func apiKeyAccountInfo(from key: String, source: String) -> AccountInfo {
@@ -1449,24 +1460,10 @@ class MetricsStore: ObservableObject {
         }
     }
 
-    // MARK: - Export CSV
+    // MARK: - Export (legacy quick-export, kept for backward compat)
 
     @MainActor func exportJSON() {
-        struct SessionExport: Encodable {
-            let sessionId, project, firstDay, topModel: String
-            let messageCount, outputTokens: Int
-            let costUSD: Double
-            let isSubagent: Bool
-            let rating: Int?
-        }
-        let data = (stats?.sessions ?? []).map { s in
-            SessionExport(sessionId: s.sessionId, project: s.project, firstDay: s.firstDay,
-                          topModel: s.topModel, messageCount: s.messageCount,
-                          outputTokens: s.outputTokens, costUSD: s.costUSD,
-                          isSubagent: s.isSubagent, rating: s.rating)
-        }
-        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let json = try? enc.encode(data) else { return }
+        guard let json = buildSessionsJSON(stats?.sessions ?? []) else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd"
@@ -1509,12 +1506,7 @@ class MetricsStore: ObservableObject {
     }
 
     @MainActor func exportCSV() {
-        var csv = "session_id,project,date,messages,output_tokens,cost_usd,is_subagent,model\n"
-        for s in (stats?.sessions ?? []) {
-            let line = "\"\(s.sessionId)\",\"\(s.project)\",\(s.firstDay),\(s.messageCount),\(s.outputTokens),\(s.costUSD),\(s.isSubagent ? 1 : 0),\"\(s.topModel)\"\n"
-            csv += line
-        }
-
+        let csv = buildSessionsCSV(stats?.sessions ?? [])
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         let dateFmt = DateFormatter(); dateFmt.dateFormat = "yyyy-MM-dd"
@@ -1522,6 +1514,132 @@ class MetricsStore: ObservableObject {
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             try? csv.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    // MARK: - Export builders (pure functions, shared by legacy + filtered export)
+
+    func buildSessionsCSV(_ sessions: [SessionSummary]) -> String {
+        var csv = "session_id,project,date,messages,output_tokens,cost_usd,is_subagent,model\n"
+        for s in sessions {
+            let row = "\"\(s.sessionId)\",\"\(s.project)\",\(s.firstDay),\(s.messageCount),\(s.outputTokens),\(s.costUSD),\(s.isSubagent ? 1 : 0),\"\(s.topModel)\"\n"
+            csv += row
+        }
+        return csv
+    }
+
+    func buildSessionsJSON(_ sessions: [SessionSummary]) -> Data? {
+        struct SessionExport: Encodable {
+            let sessionId, project, firstDay, topModel: String
+            let messageCount, outputTokens: Int
+            let costUSD: Double
+            let isSubagent: Bool
+            let rating: Int?
+        }
+        let payload = sessions.map { s in
+            SessionExport(sessionId: s.sessionId, project: s.project, firstDay: s.firstDay,
+                          topModel: s.topModel, messageCount: s.messageCount,
+                          outputTokens: s.outputTokens, costUSD: s.costUSD,
+                          isSubagent: s.isSubagent, rating: s.rating)
+        }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? enc.encode(payload)
+    }
+
+    // MARK: - Filtered export (called by ExportView)
+
+    @MainActor
+    func performExport(
+        project: String?,
+        account: String?,
+        startDate: Date?,
+        endDate: Date?,
+        formats: Set<ExportFormat>,
+        destination: ExportDestination
+    ) async throws {
+        guard let db = db else { throw NSError(domain: "ArgusDB", code: 1) }
+
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+        let startDay = startDate.map { dayFmt.string(from: $0) }
+        let endDay   = endDate.map   { dayFmt.string(from: $0) }
+
+        // Query on background to avoid blocking main thread
+        let sessions = try await Task.detached(priority: .userInitiated) {
+            try db.queryFilteredSessions(
+                account: account,
+                project: project,
+                startDay: startDay,
+                endDay: endDay
+            )
+        }.value
+
+        // Build file payloads
+        var files: [(name: String, data: Data, mime: String)] = []
+        let tag = buildExportTag(project: project, startDay: startDay, endDay: endDay)
+
+        if formats.contains(.csv) {
+            let csv = buildSessionsCSV(sessions)
+            if let data = csv.data(using: .utf8) {
+                files.append(("argusai-\(tag).csv", data, "text/csv"))
+            }
+        }
+        if formats.contains(.json) {
+            if let data = buildSessionsJSON(sessions) {
+                files.append(("argusai-\(tag).json", data, "application/json"))
+            }
+        }
+        guard !files.isEmpty else { return }
+
+        switch destination {
+        case .localFolder:
+            await saveFilesLocally(files)
+        case .googleDrive(let folderURL):
+            guard let folderID = GoogleDriveService.folderID(from: folderURL) else {
+                throw NSError(domain: "ArgusExport", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Link cartella Drive non valido"])
+            }
+            for file in files {
+                try await drive.uploadFile(name: file.name, data: file.data,
+                                           mimeType: file.mime, folderID: folderID)
+            }
+        }
+    }
+
+    private func buildExportTag(project: String?, startDay: String?, endDay: String?) -> String {
+        let dateFmt = DateFormatter(); dateFmt.dateFormat = "yyyy-MM-dd"
+        var parts: [String] = []
+        if let p = project, !p.isEmpty { parts.append(p.replacingOccurrences(of: "/", with: "-")) }
+        if let s = startDay { parts.append(s) }
+        if let e = endDay, e != startDay { parts.append(e) }
+        if parts.isEmpty { parts.append(dateFmt.string(from: Date())) }
+        return parts.joined(separator: "_")
+    }
+
+    @MainActor
+    private func saveFilesLocally(_ files: [(name: String, data: Data, mime: String)]) async {
+        if files.count == 1 {
+            let file = files[0]
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = file.name
+            if file.mime == "text/csv" { panel.allowedContentTypes = [.commaSeparatedText] }
+            else                       { panel.allowedContentTypes = [.json] }
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try? file.data.write(to: url)
+        } else {
+            // Multiple files: pick a folder, write all
+            let panel = NSOpenPanel()
+            panel.message = "Scegli la cartella dove salvare i file di export"
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.prompt = "Salva qui"
+            guard panel.runModal() == .OK, let dir = panel.url else { return }
+            for file in files {
+                let dest = dir.appendingPathComponent(file.name)
+                try? file.data.write(to: dest)
+            }
         }
     }
 }

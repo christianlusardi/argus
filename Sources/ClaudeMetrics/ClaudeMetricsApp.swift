@@ -21,14 +21,10 @@ struct ClaudeMetricsApp: App {
                     store.loadData()
                 }
                 .keyboardShortcut("r", modifiers: .command)
-                Button("Export CSV") {
-                    store.exportCSV()
+                Button("Export\u{2026}") {
+                    store.showingExport = true
                 }
                 .keyboardShortcut("e", modifiers: .command)
-                Button("Export JSON") {
-                    store.exportJSON()
-                }
-                .keyboardShortcut("e", modifiers: [.command, .shift])
             }
         }
 

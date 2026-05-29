@@ -12,6 +12,13 @@ open ArgusAI.app       # run
 **NEVER use `swift build`** — the project uses a hand-written `build.sh` with an explicit `SOURCES` array.  
 When adding a new `.swift` file, add it to the `SOURCES=(...)` list in `build.sh`.
 
+`GoogleCredentials.swift` is **gitignored** and must exist locally for the build to succeed (it defines the `GoogleDriveConfig` credential extension). Copy the template before building on a new machine:
+```bash
+cp Sources/ClaudeMetrics/GoogleCredentials.swift.example \
+   Sources/ClaudeMetrics/GoogleCredentials.swift
+# fill in your own Client ID and Secret — see README § Google Drive Export
+```
+
 Build target is **macOS 26** (`-target arm64-apple-macosx26.0`). Required for Liquid Glass APIs (`glassEffect`).
 
 ## Release
@@ -47,6 +54,9 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 | `SessionDetailView.swift` | Per-message breakdown sheet (TIME/MODEL/INPUT/OUTPUT/CACHE R/CACHE W/COST/AI LINES + totals footer) |
 | `SettingsView.swift` | Cmd+, preferences window: General (color scheme), Alerts (global + per-project), Pricing (table + external file status) |
 | `PlatformView.swift` | Platform KPIs tab (operational metrics, response time, cost per user) |
+| `ExportView.swift` | Cmd+E export sheet — filters (project, account, date range), format (CSV/JSON), destination (local / Google Drive) |
+| `GoogleDriveService.swift` | OAuth2 PKCE + Drive API upload; token storage in Keychain; `GoogleDriveConfig` enum (scheme, endpoints) |
+| `GoogleCredentials.swift` | **gitignored** — `extension GoogleDriveConfig` with `clientID`/`clientSecret`; copy from `GoogleCredentials.swift.example` |
 | `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, `ChartCrosshair`, …) |
 | `Theme.swift` | Adaptive color palette via `NSColor(dynamicProvider:)`; `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
 | `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
@@ -195,8 +205,8 @@ Key per-day structures stored in `StatsCache`:
 | **Weekly summary notification** | `scheduleWeeklySummaryIfNeeded()` — fires every Monday 09:00 with last-7-days cost + message count; guarded by week key in UserDefaults |
 | **Forecast** | `burnRatePerDay`, `currentMonthCost`, `daysLeftInMonth`, `projectedMonthCost` in `MetricsStore` |
 | **Agent Type breakdown** | `filteredSubagentCost`, `filteredDirectCost` in `MetricsStore`; two-segment bar in `OverviewView` |
-| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E |
-| **JSON export** | `exportJSON()` in `MetricsStore` — pretty-printed JSON of all sessions; Cmd+Shift+E |
+| **Filtered export** | `ExportView.swift` — Cmd+E sheet; filters: project, account (if >1), date range; formats CSV+JSON; destinations: local (`NSSavePanel`/`NSOpenPanel`) or Google Drive (OAuth2 upload); `store.performExport(...)` orchestrator in `MetricsStore`; `buildSessionsCSV`/`buildSessionsJSON` pure builders reused by legacy `exportCSV`/`exportJSON` |
+| **Google Drive OAuth** | `GoogleDriveService.swift` — PKCE flow via `ASWebAuthenticationSession`; scopes `drive.file openid email`; tokens in Keychain service `"ArgusAI-GoogleDrive"`; `uploadFile(name:data:mimeType:folderID:)` via multipart Drive API v3; `folderID(from:)` parses folder URL/ID; credentials in gitignored `GoogleCredentials.swift` (copy from `.example`) |
 | **Daily Cost chart** | `OverviewDailyCostChart` in `OverviewView` (golden area+line); also in `PlatformView` as bar chart with adaptive aggregation |
 | **Multi-account tracking** | `account_timeline` table + `messages.account_uuid`; `readCurrentAccount()` in `MetricsStore`; account chip in sidebar |
 | **Account filter** | `MetricsStore.accountFilter` → `ArgusDB.accountFilter` → SQL `AND account_uuid = '...'` on all queries; sidebar picker (hidden if single account) |

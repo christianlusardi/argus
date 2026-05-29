@@ -826,6 +826,45 @@ final class ArgusDB {
         return result
     }
 
+    /// Export-only query: filters are expressed as explicit WHERE clauses so the
+    /// export panel's own selectors are independent of the sidebar's live filters.
+    func queryFilteredSessions(account: String?, project: String?, startDay: String?, endDay: String?) throws -> [SessionSummary] {
+        var clauses: [String] = ["m.day != ''"]
+        if let a = account, !a.isEmpty { clauses.append("m.account_uuid = '\(a)'") }
+        if let p = project, !p.isEmpty { clauses.append("m.project = '\(p)'") }
+        if let s = startDay, !s.isEmpty { clauses.append("m.day >= '\(s)'") }
+        if let e = endDay,   !e.isEmpty { clauses.append("m.day <= '\(e)'") }
+        let where_ = clauses.joined(separator: " AND ")
+        let stmt = try prepare("""
+            SELECT m.session_id, m.project, MIN(m.day), COUNT(*),
+                SUM(m.output_tokens), SUM(m.cost_usd), MAX(m.is_subagent),
+                (SELECT model FROM messages WHERE session_id = m.session_id
+                 GROUP BY model ORDER BY COUNT(*) DESC LIMIT 1),
+                f.rating
+            FROM messages m
+            LEFT JOIN feedback f ON f.session_id = m.session_id
+            WHERE \(where_)
+            GROUP BY m.session_id ORDER BY SUM(m.cost_usd) DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        var result: [SessionSummary] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let rating: Int? = sqlite3_column_type(stmt, 8) == SQLITE_NULL ? nil : colInt(stmt, 8)
+            result.append(SessionSummary(
+                sessionId: colTxt(stmt, 0),
+                project:   colTxt(stmt, 1),
+                firstDay:  colTxt(stmt, 2),
+                messageCount: colInt(stmt, 3),
+                outputTokens: colInt(stmt, 4),
+                costUSD:   colDbl(stmt, 5),
+                isSubagent: colInt(stmt, 6) == 1,
+                topModel:  colTxt(stmt, 7),
+                rating:    rating
+            ))
+        }
+        return result
+    }
+
     func querySessionMessages(sessionId: String) throws -> [MessageDetail] {
         let stmt = try prepare("""
             SELECT timestamp, model, input_tokens, output_tokens,

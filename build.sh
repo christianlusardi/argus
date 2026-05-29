@@ -72,6 +72,9 @@ SOURCES=(
     Sources/ClaudeMetrics/SessionDetailView.swift
     Sources/ClaudeMetrics/PlatformView.swift
     Sources/ClaudeMetrics/SettingsView.swift
+    Sources/ClaudeMetrics/GoogleDriveService.swift
+    Sources/ClaudeMetrics/GoogleCredentials.swift
+    Sources/ClaudeMetrics/ExportView.swift
     Sources/ClaudeMetrics/ClaudeMetricsApp.swift
 )
 

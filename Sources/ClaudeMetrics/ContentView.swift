@@ -89,6 +89,11 @@ struct ContentView: View {
         .ignoresSafeArea()
         .background { WindowConfigurator() }
         .preferredColorScheme(preferredColorScheme)
+        .sheet(isPresented: $store.showingExport) {
+            ExportView()
+                .environmentObject(store)
+                .environmentObject(store.drive)
+        }
     }
 }
 

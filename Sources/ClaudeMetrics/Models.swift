@@ -211,6 +211,19 @@ struct ProjectAlertThreshold: Codable {
     var monthlyLimit: Double
 }
 
+// MARK: - Export
+
+enum ExportFormat: String, CaseIterable, Identifiable {
+    case csv  = "CSV"
+    case json = "JSON"
+    var id: String { rawValue }
+}
+
+enum ExportDestination: Equatable {
+    case localFolder
+    case googleDrive(folderURL: String)
+}
+
 struct ModelPricingTable {
     struct Price {
         let inputPerMTok: Double
