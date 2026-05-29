@@ -14,13 +14,13 @@ ArgusAI reads the local log files that Claude Code writes on your machine and tu
 
 | Tab | What you see |
 |---|---|
-| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown |
-| **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) |
-| **Activity** | Daily message chart (with tooltip), Output/Context Ratio trend, day-of-week heatmap, current + best-ever streak |
+| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown; **click any point on the Daily Cost chart** to open a breakdown by model, project, and raw SQL |
+| **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) with interactive crosshair |
+| **Activity** | Daily message chart (with crosshair tooltip), Output/Context Ratio trend, day-of-week heatmap, current + best-ever streak |
 | **Schedule** | Hourly usage distribution (with tooltip), **cost per hour of day**, average start/end time, work hours |
 | **Projects** | Cost and token usage by repository — **sortable columns** (click any header) |
 | **Sessions** | Per-session table with **search**, **sortable columns**, pagination ("Load more") |
-| **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend, daily cost chart, response time, cost per user |
+| **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend (with crosshair), daily cost chart, response time, cost per user |
 
 Everything updates automatically every 3 seconds. No data leaves your machine.
 
@@ -129,13 +129,15 @@ GROUP BY account_uuid ORDER BY cost DESC;
 ## Filters
 
 ### Time range
-Use the **TIME RANGE** picker in the sidebar to scope everything to:
+Use the **TIME RANGE** section in the sidebar to scope everything to:
 
 - **Today** — current day only
-- **7d** — last 7 days
-- **30d** — last 30 days
-- **All** — since you started using Claude Code
-- **Custom range** — pick any **Da** (from) and **Al** (to) date with the calendar pickers below the preset buttons; selecting a date activates the custom filter automatically
+- **7 days** — last 7 days
+- **30 days** — last 30 days
+- **All time** — since you started using Claude Code
+- **Custom** — pick any **Da** (from) and **Al** (to) date with the calendar pickers that appear below; selecting a date activates the custom filter automatically
+
+The active preset is highlighted with a blue dot, just like the navigation items.
 
 ### Account filter
 If you use Claude Code with **multiple accounts or API keys**, ArgusAI tracks each one separately and shows an **ACCOUNT** picker in the sidebar. Selecting an account scopes all tabs — costs, tokens, sessions, projects — to that identity only.

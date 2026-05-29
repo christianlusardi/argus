@@ -38,14 +38,14 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 | `Database.swift` | `ArgusDB` — SQLite ingestion + all KPI queries; owns `~/.claude/argusai.db` |
 | `MetricsStore.swift` | `ObservableObject` — calls `ArgusDB`, owns all state and computed properties |
 | `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum) |
-| `OverviewView.swift` | Summary KPIs + charts |
+| `OverviewView.swift` | Summary KPIs + charts; `DailyCostExplainView` popover (click-to-explain on Daily Cost chart) |
 | `ModelsView.swift` | Per-model token breakdown |
 | `ActivityView.swift` | Daily activity chart, day-of-week, streak |
 | `ScheduleView.swift` | Hourly distribution, top hours, work-hour bars |
 | `ProjectsView.swift` | Per-project cost/token table and chart |
 | `SessionsView.swift` | Per-session table (id, project, date, msgs, output, cost, model, sub badge) |
 | `PlatformView.swift` | Platform KPIs tab (operational metrics, response time, cost per user) |
-| `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, …) |
+| `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, `ChartCrosshair`, …) |
 | `Theme.swift` | Color palette, `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
 | `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
 
@@ -136,6 +136,19 @@ The sidebar "PROJECT" section is only shown when `knownProjects.count > 1`.
 - Sidebar top padding is **38pt** to clear the traffic light buttons
 - Cards use **macOS 26 Liquid Glass**: `.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))` — use this for any new card component, never `Color.appSurface` + clipShape
 
+### Sidebar structure (`ContentView.swift`)
+
+```
+[Fixed] Logo header (38pt top padding)
+[ScrollView] Account chip · Nav items · filter sections
+[Fixed] Footer (last updated · Refresh button)
+```
+
+- **Never** use a segmented picker in the sidebar — use `SidebarFilterRow` rows (same visual language as nav items)
+- **Never** use `Color.appBorder.frame(height: 1)` as section separator — use `SidebarSectionLabel` + padding
+- All filter content (TIME RANGE, DAILY LIMIT, ACCOUNT, PROJECT) lives inside the `ScrollView` so it never overflows with many projects
+- New filter sections: add a `SidebarSectionLabel("MY SECTION")` + `VStack` of `SidebarFilterRow` buttons, padded `.horizontal, 8`
+
 When adding a new filter-aware property, add all **five** cases to the switch (`.today`, `.sevenDays`, `.thirtyDays`, `.all`, `.custom`). `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`; `.custom` uses `customStartDate`/`customEndDate` from MetricsStore.
 
 Key per-day structures stored in `StatsCache`:
@@ -190,7 +203,9 @@ Key per-day structures stored in `StatsCache`:
 | **Cost per Hour** | `queryDailyHourCosts()` → `dailyHourCosts` → `filteredHourlyCosts`; gold bar chart "Cost per Hour of Day" in `ScheduleView` |
 | **Chart tooltips** | `chartXSelection` + overlay on `ActivityBarChart` (date → msg count) and `HourlyBarChart` (hour → msg count) |
 | **Sortable Projects table** | `ProjectSortKey` enum + `sorted` computed var in `ProjectTable`; click any column header (PROJECT/MSG/OUTPUT/COST/WEB/% AI) to sort |
-| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar; selecting a date activates `.custom` filter; clicking a preset deactivates it |
+| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar (indented under "Custom" `SidebarFilterRow`); selecting a date activates `.custom` filter; clicking a preset deactivates it |
+| **Chart crosshair** | `ChartCrosshair` helper in `Components.swift` — vertical + horizontal dashed lines, intersection dot, floating tooltip; applied to all line charts (Daily Messages, Daily Cost, Daily Cost Trend, Output/Context Ratio, Token Trend) |
+| **Click-to-explain** | `DailyCostExplainView` popover in `OverviewView.swift`; clicking the Daily Cost chart opens a breakdown by model + project, raw SQL, copy button |
 
 ### Platform tab — Cost per User
 Uses `filteredAccountCosts: [AccountCostBreakdown]` computed from `DailyAccountCosts` (per-day, per-account cost + message counts). This ensures the "Today" filter shows only today's cost, not the all-time total. `AccountCostBreakdown` carries both `costUSD` and `messageCount`.
