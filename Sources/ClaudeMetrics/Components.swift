@@ -116,6 +116,55 @@ struct TokenStat: View {
     }
 }
 
+enum ChartCrosshair {
+    static let lineColor = Color.appTextSecondary.opacity(0.55)
+    static let lineDash = StrokeStyle(lineWidth: 1, dash: [4, 3])
+
+    @ViewBuilder
+    static func verticalLine(plotRect: CGRect, xPos: CGFloat) -> some View {
+        Path { p in
+            p.move(to: CGPoint(x: xPos, y: plotRect.minY))
+            p.addLine(to: CGPoint(x: xPos, y: plotRect.maxY))
+        }
+        .stroke(lineColor, style: lineDash)
+    }
+
+    @ViewBuilder
+    static func horizontalLine(plotRect: CGRect, yPos: CGFloat) -> some View {
+        Path { p in
+            p.move(to: CGPoint(x: plotRect.minX, y: yPos))
+            p.addLine(to: CGPoint(x: plotRect.maxX, y: yPos))
+        }
+        .stroke(lineColor, style: lineDash)
+    }
+
+    @ViewBuilder
+    static func point(xPos: CGFloat, yPos: CGFloat, color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 10, height: 10)
+            .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1.5))
+            .position(x: xPos, y: yPos)
+    }
+
+    static func tooltip<C: View>(
+        plotRect: CGRect,
+        xPos: CGFloat,
+        yPos: CGFloat,
+        @ViewBuilder content: () -> C
+    ) -> some View {
+        content()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.appBorder, lineWidth: 0.5))
+            .position(
+                x: min(max(xPos + 56, plotRect.minX + 56), plotRect.maxX - 56),
+                y: max(yPos - 26, plotRect.minY + 18)
+            )
+    }
+}
+
 struct LoadingView: View {
     var body: some View {
         VStack(spacing: 12) {
