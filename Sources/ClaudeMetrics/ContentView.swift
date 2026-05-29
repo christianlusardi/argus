@@ -43,6 +43,15 @@ enum NavSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject var store: MetricsStore
     @State private var selected: NavSection = .overview
+    @AppStorage("argusai.colorScheme") private var colorSchemePref: String = "system"
+
+    private var preferredColorScheme: ColorScheme? {
+        switch colorSchemePref {
+        case "dark":  return .dark
+        case "light": return .light
+        default:      return nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -59,6 +68,8 @@ struct ContentView: View {
                         LoadingView()
                     } else if let err = store.error {
                         ErrorView(message: err)
+                    } else if store.stats == nil && !store.isLoading {
+                        OnboardingView()
                     } else {
                         switch selected {
                         case .overview: OverviewView()
@@ -77,6 +88,12 @@ struct ContentView: View {
         .background(Color.appBg)
         .ignoresSafeArea()
         .background { WindowConfigurator() }
+        .preferredColorScheme(preferredColorScheme)
+        .sheet(isPresented: $store.showingExport) {
+            ExportView()
+                .environmentObject(store)
+                .environmentObject(store.drive)
+        }
     }
 }
 
@@ -84,10 +101,17 @@ struct SidebarView: View {
     @Binding var selected: NavSection
     @EnvironmentObject var store: MetricsStore
 
+    private let datePresets: [(String, String, DateFilter)] = [
+        ("sun.horizon", "Today",    .today),
+        ("calendar",   "7 days",   .sevenDays),
+        ("calendar",   "30 days",  .thirtyDays),
+        ("infinity",   "All time", .all),
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
-            // Header
+            // ── Fixed header ──────────────────────────
             HStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
@@ -108,174 +132,164 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 38)
-            .padding(.bottom, 12)
+            .padding(.bottom, 14)
 
-            // Account chip
-            if let acct = store.currentAccount {
-                HStack(spacing: 6) {
-                    Image(systemName: acct.isOAuth ? "person.crop.circle.fill" : "key.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(acct.isOAuth ? Color.appAccent : Color.orange)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(acct.label)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Color.appTextPrimary)
-                            .lineLimit(1)
-                        if !acct.subtitle.isEmpty {
-                            Text(acct.subtitle)
-                                .font(.system(size: 9))
-                                .foregroundStyle(Color.appTextTertiary)
-                                .lineLimit(1)
+            // ── Single scrollable body ────────────────
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+
+                    // Account chip
+                    if let acct = store.currentAccount {
+                        HStack(spacing: 6) {
+                            Image(systemName: acct.isOAuth ? "person.crop.circle.fill" : "key.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(acct.isOAuth ? Color.appAccent : Color.orange)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(acct.label)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(Color.appTextPrimary)
+                                    .lineLimit(1)
+                                if !acct.subtitle.isEmpty {
+                                    Text(acct.subtitle)
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(Color.appTextTertiary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(acct.isOAuth ? Color.appAccent.opacity(0.08) : Color.orange.opacity(0.08))
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 14)
+                    }
+
+                    // Navigation
+                    VStack(spacing: 2) {
+                        ForEach(NavSection.allCases) { section in
+                            NavButton(section: section, isSelected: selected == section) {
+                                withAnimation(.easeInOut(duration: 0.15)) { selected = section }
+                            }
                         }
                     }
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(acct.isOAuth ? Color.appAccent.opacity(0.08) : Color.orange.opacity(0.08))
-                )
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
-            }
+                    .padding(.horizontal, 8)
 
-            // Nav
-            VStack(spacing: 2) {
-                ForEach(NavSection.allCases) { section in
-                    NavButton(section: section, isSelected: selected == section) {
-                        withAnimation(.easeInOut(duration: 0.15)) { selected = section }
+                    // Time range
+                    SidebarSectionLabel("TIME RANGE")
+                    VStack(spacing: 2) {
+                        ForEach(datePresets, id: \.2) { icon, label, filter in
+                            let isSelected = store.dateFilter == filter && store.dateFilter != .custom
+                            SidebarFilterRow(icon: icon, label: label, isSelected: isSelected) {
+                                store.dateFilter = filter
+                            }
+                        }
                     }
-                }
-            }
-            .padding(.horizontal, 8)
+                    .padding(.horizontal, 8)
 
-            Spacer()
+                    // Custom range
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.system(size: 10))
+                                .foregroundStyle(store.dateFilter == .custom ? Color.appAccent : Color.appTextTertiary)
+                                .frame(width: 14)
+                            Text("Custom")
+                                .font(.system(size: 11, weight: store.dateFilter == .custom ? .semibold : .regular))
+                                .foregroundStyle(store.dateFilter == .custom ? Color.appTextPrimary : Color.appTextSecondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.top, 4)
 
-            // Daily limit
-            VStack(alignment: .leading, spacing: 6) {
-                Color.appBorder.frame(height: 1)
-                Text("DAILY LIMIT")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.appTextTertiary)
-                    .tracking(0.5)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                TextField("$0.00", value: $store.alertThreshold, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 6)
-            }
-
-            // Date filter
-            VStack(alignment: .leading, spacing: 6) {
-                Color.appBorder.frame(height: 1)
-                Text("TIME RANGE")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.appTextTertiary)
-                    .tracking(0.5)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 10)
-                Picker("", selection: Binding(
-                    get: { store.dateFilter == .custom ? DateFilter.all : store.dateFilter },
-                    set: { store.dateFilter = $0 }
-                )) {
-                    ForEach(DateFilter.presets, id: \.self) { f in
-                        Text(f.rawValue).tag(f)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text("Da")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .frame(width: 18, alignment: .trailing)
+                                DatePicker("", selection: Binding(
+                                    get: { store.customStartDate },
+                                    set: { store.customStartDate = $0; store.dateFilter = .custom }
+                                ), in: ...store.customEndDate, displayedComponents: .date)
+                                .datePickerStyle(.compact)
+                                .labelsHidden()
+                            }
+                            HStack(spacing: 6) {
+                                Text("Al")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color.appTextTertiary)
+                                    .frame(width: 18, alignment: .trailing)
+                                DatePicker("", selection: Binding(
+                                    get: { store.customEndDate },
+                                    set: { store.customEndDate = $0; store.dateFilter = .custom }
+                                ), in: store.customStartDate..., displayedComponents: .date)
+                                .datePickerStyle(.compact)
+                                .labelsHidden()
+                            }
+                        }
+                        .padding(.leading, 36)
+                        .padding(.bottom, 4)
                     }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 12)
 
-                // Custom date range
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("Da")
+                    // Daily limit
+                    SidebarSectionLabel("DAILY LIMIT")
+                    HStack(spacing: 8) {
+                        Image(systemName: "bell.badge")
                             .font(.system(size: 11))
-                            .foregroundStyle(Color.appTextSecondary)
-                            .frame(width: 20, alignment: .trailing)
-                        DatePicker("", selection: Binding(
-                            get: { store.customStartDate },
-                            set: { store.customStartDate = $0; store.dateFilter = .custom }
-                        ), in: ...store.customEndDate, displayedComponents: .date)
-                        .datePickerStyle(.compact)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                            .foregroundStyle(Color.appTextTertiary)
+                            .frame(width: 14)
+                        TextField("$0.00", value: $store.alertThreshold, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
                     }
-                    HStack(spacing: 6) {
-                        Text("Al")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.appTextSecondary)
-                            .frame(width: 20, alignment: .trailing)
-                        DatePicker("", selection: Binding(
-                            get: { store.customEndDate },
-                            set: { store.customEndDate = $0; store.dateFilter = .custom }
-                        ), in: store.customStartDate..., displayedComponents: .date)
-                        .datePickerStyle(.compact)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
-            }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 4)
 
-            // Account filter (only shown when multiple accounts known)
-            if store.knownAccounts.count > 1 {
-                VStack(alignment: .leading, spacing: 4) {
-                    Color.appBorder.frame(height: 1)
-                    Text("ACCOUNT")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.appTextTertiary)
-                        .tracking(0.5)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 10)
-                    AccountFilterButton(label: "All Accounts", icon: "person.2.fill",
-                                        isSelected: store.accountFilter == nil) {
-                        store.accountFilter = nil
-                    }
-                    ForEach(store.knownAccounts) { acct in
-                        AccountFilterButton(
-                            label: acct.label,
-                            icon: acct.isOAuth ? "person.crop.circle" : "key.fill",
-                            isSelected: store.accountFilter == acct.accountUuid
-                        ) {
-                            store.accountFilter = acct.accountUuid
+                    // Account filter
+                    if store.knownAccounts.count > 1 {
+                        SidebarSectionLabel("ACCOUNT")
+                        VStack(spacing: 2) {
+                            SidebarFilterRow(icon: "person.2.fill", label: "All Accounts",
+                                             isSelected: store.accountFilter == nil) {
+                                store.accountFilter = nil
+                            }
+                            ForEach(store.knownAccounts) { acct in
+                                SidebarFilterRow(
+                                    icon: acct.isOAuth ? "person.crop.circle" : "key.fill",
+                                    label: acct.label,
+                                    isSelected: store.accountFilter == acct.accountUuid
+                                ) { store.accountFilter = acct.accountUuid }
+                            }
                         }
+                        .padding(.horizontal, 8)
                     }
-                }
-                .padding(.bottom, 6)
-            }
 
-            // Project filter (only shown when multiple projects known)
-            if store.knownProjects.count > 1 {
-                VStack(alignment: .leading, spacing: 4) {
-                    Color.appBorder.frame(height: 1)
-                    Text("PROJECT")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Color.appTextTertiary)
-                        .tracking(0.5)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 10)
-                    AccountFilterButton(label: "All Projects", icon: "folder.fill",
-                                        isSelected: store.projectFilter == nil) {
-                        store.projectFilter = nil
-                    }
-                    ForEach(store.knownProjects, id: \.self) { proj in
-                        AccountFilterButton(
-                            label: proj,
-                            icon: "folder",
-                            isSelected: store.projectFilter == proj
-                        ) {
-                            store.projectFilter = proj
+                    // Project filter
+                    if store.knownProjects.count > 1 {
+                        SidebarSectionLabel("PROJECT")
+                        VStack(spacing: 2) {
+                            SidebarFilterRow(icon: "folder.fill", label: "All Projects",
+                                             isSelected: store.projectFilter == nil) {
+                                store.projectFilter = nil
+                            }
+                            ForEach(store.knownProjects, id: \.self) { proj in
+                                SidebarFilterRow(icon: "folder", label: proj,
+                                                 isSelected: store.projectFilter == proj) {
+                                    store.projectFilter = proj
+                                }
+                            }
                         }
+                        .padding(.horizontal, 8)
                     }
+
+                    Spacer(minLength: 12)
                 }
-                .padding(.bottom, 6)
             }
 
-            // Footer
+            // ── Fixed footer ──────────────────────────
             VStack(alignment: .leading, spacing: 0) {
                 Color.appBorder.frame(height: 1)
 
@@ -287,12 +301,10 @@ struct SidebarView: View {
                             .foregroundStyle(Color.appTextTertiary)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .padding(.top, 10)
                 }
 
-                Button {
-                    store.loadData()
-                } label: {
+                Button { store.loadData() } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11))
@@ -311,21 +323,35 @@ struct SidebarView: View {
     }
 }
 
-struct AccountFilterButton: View {
-    let label: String
+private struct SidebarSectionLabel: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+    var body: some View {
+        Text(title)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Color.appTextTertiary)
+            .tracking(0.8)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 4)
+    }
+}
+
+private struct SidebarFilterRow: View {
     let icon: String
+    let label: String
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 7) {
+            HStack(spacing: 9) {
                 Image(systemName: icon)
-                    .font(.system(size: 11))
-                    .frame(width: 14)
+                    .font(.system(size: 12))
+                    .frame(width: 16)
                     .foregroundStyle(isSelected ? Color.appAccent : Color.appTextSecondary)
                 Text(label)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? Color.appTextPrimary : Color.appTextSecondary)
                     .lineLimit(1)
                 Spacer()
@@ -333,17 +359,17 @@ struct AccountFilterButton: View {
                     Circle().fill(Color.appAccent).frame(width: 5, height: 5)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 7)
                     .fill(isSelected ? Color.appAccent.opacity(0.1) : Color.clear)
             )
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8)
     }
 }
+
 
 struct NavButton: View {
     let section: NavSection
@@ -374,5 +400,54 @@ struct NavButton: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+struct OnboardingView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "waveform.circle")
+                .font(.system(size: 64))
+                .foregroundStyle(Color.appAccent)
+
+            VStack(spacing: 8) {
+                Text("No data yet")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color.appTextPrimary)
+                Text("ArgusAI reads your Claude Code session files automatically.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.appTextSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                OnboardingStep(number: "1", text: "Install Claude Code from claude.ai/code")
+                OnboardingStep(number: "2", text: "Run Claude Code in any terminal — start a conversation")
+                OnboardingStep(number: "3", text: "ArgusAI detects sessions in ~/.claude/projects and shows metrics here")
+            }
+            .padding(20)
+            .background(Color.appSurface.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct OnboardingStep: View {
+    let number: String
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(number)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Color.appBg)
+                .frame(width: 22, height: 22)
+                .background(Color.appAccent)
+                .clipShape(Circle())
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(Color.appTextSecondary)
+        }
     }
 }

@@ -14,13 +14,13 @@ ArgusAI reads the local log files that Claude Code writes on your machine and tu
 
 | Tab | What you see |
 |---|---|
-| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown |
-| **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) |
-| **Activity** | Daily message chart (with tooltip), Output/Context Ratio trend, day-of-week heatmap, current + best-ever streak |
+| **Overview** | Total messages, tokens, cost, cache hit rate, web searches, current streak, forecast, account breakdown; **click any point on the Daily Cost chart** to open a breakdown by model, project, and raw SQL |
+| **Models** | Token breakdown and cost per model (Opus, Sonnet, Haiku) with interactive crosshair |
+| **Activity** | Daily message chart (with crosshair tooltip), Output/Context Ratio trend, day-of-week heatmap, current + best-ever streak |
 | **Schedule** | Hourly usage distribution (with tooltip), **cost per hour of day**, average start/end time, work hours |
 | **Projects** | Cost and token usage by repository — **sortable columns** (click any header) |
 | **Sessions** | Per-session table with **search**, **sortable columns**, pagination ("Load more") |
-| **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend, daily cost chart, response time, cost per user |
+| **Platform** | Operational KPIs: total cost, requests, avg cost/tokens per request, token trend (with crosshair), daily cost chart, response time, cost per user |
 
 Everything updates automatically every 3 seconds. No data leaves your machine.
 
@@ -122,20 +122,24 @@ GROUP BY account_uuid ORDER BY cost DESC;
 
 ## Privacy
 
-**All data stays on your machine.** ArgusAI never connects to the internet. It only reads files in `~/.claude/projects/` that Claude Code already created.
+**All data stays on your machine by default.** ArgusAI only reads files in `~/.claude/projects/` that Claude Code already created, and never sends any data anywhere automatically.
+
+The only optional outbound connection is the **Google Drive export** feature: when you explicitly click "Esporta" with the Google Drive destination, ArgusAI uploads the generated CSV/JSON file to the Drive folder you specified. No data is sent without your explicit action.
 
 ---
 
 ## Filters
 
 ### Time range
-Use the **TIME RANGE** picker in the sidebar to scope everything to:
+Use the **TIME RANGE** section in the sidebar to scope everything to:
 
 - **Today** — current day only
-- **7d** — last 7 days
-- **30d** — last 30 days
-- **All** — since you started using Claude Code
-- **Custom range** — pick any **Da** (from) and **Al** (to) date with the calendar pickers below the preset buttons; selecting a date activates the custom filter automatically
+- **7 days** — last 7 days
+- **30 days** — last 30 days
+- **All time** — since you started using Claude Code
+- **Custom** — pick any **Da** (from) and **Al** (to) date with the calendar pickers that appear below; selecting a date activates the custom filter automatically
+
+The active preset is highlighted with a blue dot, just like the navigation items.
 
 ### Account filter
 If you use Claude Code with **multiple accounts or API keys**, ArgusAI tracks each one separately and shows an **ACCOUNT** picker in the sidebar. Selecting an account scopes all tabs — costs, tokens, sessions, projects — to that identity only.
@@ -160,11 +164,38 @@ The PROJECT section is hidden when you only have one project — it only appears
 
 ## Export
 
+Press **Cmd+E** (or **File → Export…**) to open the Export sheet. You can filter by project, account, and date range before exporting. Supported formats: **CSV** and **JSON**. Destination: local file or **Google Drive** (see below).
+
 | Shortcut | Action |
 |---|---|
-| **Cmd+E** | Export all sessions as CSV |
-| **Cmd+Shift+E** | Export all sessions as JSON |
+| **Cmd+E** | Open Export sheet (filtered CSV / JSON) |
 | **Cmd+R** | Force refresh |
+
+### Google Drive Export
+
+Exporting to Google Drive requires a Google OAuth 2.0 client bundled at build time. The credentials are **not included in the repo** — each contributor provides their own.
+
+**One-time setup (per developer):**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com) → create or select a project
+2. Enable the **Google Drive API** (APIs & Services → Enable APIs → search "Drive API")
+3. Configure the **OAuth consent screen** (External, add scopes `drive.file`, `openid`, `email`)
+4. Create a credential: **APIs & Services → Credentials → Create OAuth client ID → Desktop app**
+5. Note the **Client ID** and **Client Secret**
+6. Under **Authorized redirect URIs** add:
+   ```
+   com.googleusercontent.apps.<YOUR_CLIENT_ID_PREFIX>:/oauthcallback
+   ```
+   where `<YOUR_CLIENT_ID_PREFIX>` is the part before `.apps.googleusercontent.com`
+7. Copy the template and fill in your values:
+   ```bash
+   cp Sources/ClaudeMetrics/GoogleCredentials.swift.example \
+      Sources/ClaudeMetrics/GoogleCredentials.swift
+   # then edit GoogleCredentials.swift with your Client ID and Secret
+   ```
+8. `bash build.sh` — the credentials are compiled in and `GoogleCredentials.swift` is gitignored
+
+**End-user experience:** click "Connetti con Google" in the Export sheet → Google login page → grant access → done. Google may show an "app not verified" screen; click **Advanced → Proceed** to continue (expected for apps not yet through Google's verification process).
 
 ---
 

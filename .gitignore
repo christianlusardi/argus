@@ -4,3 +4,5 @@
 .DS_Store
 *.o
 *.swp
+# Google Drive OAuth credentials — each contributor creates their own (see README)
+Sources/ClaudeMetrics/GoogleCredentials.swift

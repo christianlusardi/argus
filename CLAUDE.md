@@ -1,6 +1,6 @@
 # ArgusAI
 
-Native macOS dark-themed app that monitors Claude Code usage metrics in real time.
+Native macOS app (dark/light adaptive) that monitors Claude Code usage metrics in real time.
 
 ## Build & Run
 
@@ -11,6 +11,13 @@ open ArgusAI.app       # run
 
 **NEVER use `swift build`** — the project uses a hand-written `build.sh` with an explicit `SOURCES` array.  
 When adding a new `.swift` file, add it to the `SOURCES=(...)` list in `build.sh`.
+
+`GoogleCredentials.swift` is **gitignored** and must exist locally for the build to succeed (it defines the `GoogleDriveConfig` credential extension). Copy the template before building on a new machine:
+```bash
+cp Sources/ClaudeMetrics/GoogleCredentials.swift.example \
+   Sources/ClaudeMetrics/GoogleCredentials.swift
+# fill in your own Client ID and Secret — see README § Google Drive Export
+```
 
 Build target is **macOS 26** (`-target arm64-apple-macosx26.0`). Required for Liquid Glass APIs (`glassEffect`).
 
@@ -34,19 +41,24 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | File | Role |
 |---|---|
-| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, `DailyAccountCosts`, …) |
+| `Models.swift` | All Codable structs (`StatsCache`, `DailyTokenTotals`, `DailyModelBreakdown`, `DailyProjectCosts`, `DailyAccountCosts`, `SessionMessageDetail`, `ProjectAlertThreshold`, …) |
 | `Database.swift` | `ArgusDB` — SQLite ingestion + all KPI queries; owns `~/.claude/argusai.db` |
 | `MetricsStore.swift` | `ObservableObject` — calls `ArgusDB`, owns all state and computed properties |
-| `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum) |
-| `OverviewView.swift` | Summary KPIs + charts |
+| `ContentView.swift` | Navigation shell (sidebar + `NavSection` enum); `OnboardingView` for first-run empty state |
+| `OverviewView.swift` | Summary KPIs + charts; `DailyCostExplainView` popover (click-to-explain on Daily Cost chart) |
 | `ModelsView.swift` | Per-model token breakdown |
 | `ActivityView.swift` | Daily activity chart, day-of-week, streak |
 | `ScheduleView.swift` | Hourly distribution, top hours, work-hour bars |
 | `ProjectsView.swift` | Per-project cost/token table and chart |
-| `SessionsView.swift` | Per-session table (id, project, date, msgs, output, cost, model, sub badge) |
+| `SessionsView.swift` | Per-session table; click any row → `SessionDetailView` sheet |
+| `SessionDetailView.swift` | Per-message breakdown sheet (TIME/MODEL/INPUT/OUTPUT/CACHE R/CACHE W/COST/AI LINES + totals footer) |
+| `SettingsView.swift` | Cmd+, preferences window: General (color scheme), Alerts (global + per-project), Pricing (table + external file status) |
 | `PlatformView.swift` | Platform KPIs tab (operational metrics, response time, cost per user) |
-| `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, …) |
-| `Theme.swift` | Color palette, `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
+| `ExportView.swift` | Cmd+E export sheet — filters (project, account, date range), format (CSV/JSON), destination (local / Google Drive) |
+| `GoogleDriveService.swift` | OAuth2 PKCE + Drive API upload; token storage in Keychain; `GoogleDriveConfig` enum (scheme, endpoints) |
+| `GoogleCredentials.swift` | **gitignored** — `extension GoogleDriveConfig` with `clientID`/`clientSecret`; copy from `GoogleCredentials.swift.example` |
+| `Components.swift` | Shared UI components (`MetricCard`, `SectionCard`, `DeltaBadge`, `ChartCrosshair`, …) |
+| `Theme.swift` | Adaptive color palette via `NSColor(dynamicProvider:)`; `Color.appAccent`, `modelDisplayName()`, `formatTokens()` |
 | `Sources/CSQLite/` | Module map + shim header that bridges system `libsqlite3` into Swift |
 
 ## Data pipeline
@@ -59,6 +71,8 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 - `ArgusDB` tracks `lines_processed` per file in the `ingested_files` table — only new lines are read on each 3s refresh.
 - All KPI queries run as SQL against indexed tables; **never re-parse JSONL in Swift**.
 - Ingestion uses `INSERT OR REPLACE` (not `INSERT OR IGNORE`) so that corrected fields (e.g. `web_searches`) are always up to date on re-ingest.
+- **Dedup**: Claude Code sometimes writes the same API response twice to the same JSONL (identical `requestId`, consecutive lines). `ingestFiles()` uses a `seenRequestIds: Set<String>` per file, pre-seeded from the DB, to skip duplicates across refresh cycles. A one-time migration (`argusai.dedupRequestIds.v1`) cleaned up historical duplicates using `(session_id, timestamp)`.
+- **Cost estimation**: JSONL files do NOT contain a `costUSD` field. ArgusAI estimates costs using `ModelPricingTable` (public API prices). Actual billing may differ by ~10–15% due to plan pricing, billing cycle, or cache tier differences. An external override file `~/.claude/argus_pricing.json` can override per-model prices.
 
 ### Adding a new data point
 
@@ -72,7 +86,7 @@ bash release.sh 1.2.0   # oppure senza argomento: chiede la versione interattiva
 
 | Table | Key columns |
 |---|---|
-| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` · `account_uuid` |
+| `messages` | `(file_path, line_num)` PK · `session_id` · `day` · `hour` · `model` · `input/output/cr/cc/ws tokens` · `cost_usd` · `project` · `is_subagent` · `account_uuid` · `request_id` |
 | `sessions` | `session_id` PK · `project` · `is_subagent` |
 | `tool_events` | `(file_path, line_num)` PK · `session_id` · `day` · `count` |
 | `user_turns` | `(file_path, line_num)` PK · `session_id` · `timestamp` · `day` — human-typed messages, used for response time |
@@ -136,6 +150,19 @@ The sidebar "PROJECT" section is only shown when `knownProjects.count > 1`.
 - Sidebar top padding is **38pt** to clear the traffic light buttons
 - Cards use **macOS 26 Liquid Glass**: `.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12))` — use this for any new card component, never `Color.appSurface` + clipShape
 
+### Sidebar structure (`ContentView.swift`)
+
+```
+[Fixed] Logo header (38pt top padding)
+[ScrollView] Account chip · Nav items · filter sections
+[Fixed] Footer (last updated · Refresh button)
+```
+
+- **Never** use a segmented picker in the sidebar — use `SidebarFilterRow` rows (same visual language as nav items)
+- **Never** use `Color.appBorder.frame(height: 1)` as section separator — use `SidebarSectionLabel` + padding
+- All filter content (TIME RANGE, DAILY LIMIT, ACCOUNT, PROJECT) lives inside the `ScrollView` so it never overflows with many projects
+- New filter sections: add a `SidebarSectionLabel("MY SECTION")` + `VStack` of `SidebarFilterRow` buttons, padded `.horizontal, 8`
+
 When adding a new filter-aware property, add all **five** cases to the switch (`.today`, `.sevenDays`, `.thirtyDays`, `.all`, `.custom`). `.today` uses `Calendar.current.startOfDay(for: Date())` as cutoff; `.sevenDays` / `.thirtyDays` use `Calendar.current.date(byAdding: .day, value: -N, to: Date())`; `.custom` uses `customStartDate`/`customEndDate` from MetricsStore.
 
 Key per-day structures stored in `StatsCache`:
@@ -178,8 +205,8 @@ Key per-day structures stored in `StatsCache`:
 | **Weekly summary notification** | `scheduleWeeklySummaryIfNeeded()` — fires every Monday 09:00 with last-7-days cost + message count; guarded by week key in UserDefaults |
 | **Forecast** | `burnRatePerDay`, `currentMonthCost`, `daysLeftInMonth`, `projectedMonthCost` in `MetricsStore` |
 | **Agent Type breakdown** | `filteredSubagentCost`, `filteredDirectCost` in `MetricsStore`; two-segment bar in `OverviewView` |
-| **CSV export** | `exportCSV()` in `MetricsStore` — `NSSavePanel` + writes session CSV; Cmd+E |
-| **JSON export** | `exportJSON()` in `MetricsStore` — pretty-printed JSON of all sessions; Cmd+Shift+E |
+| **Filtered export** | `ExportView.swift` — Cmd+E sheet; filters: project, account (if >1), date range; formats CSV+JSON; destinations: local (`NSSavePanel`/`NSOpenPanel`) or Google Drive (OAuth2 upload); `store.performExport(...)` orchestrator in `MetricsStore`; `buildSessionsCSV`/`buildSessionsJSON` pure builders reused by legacy `exportCSV`/`exportJSON` |
+| **Google Drive OAuth** | `GoogleDriveService.swift` — PKCE flow via `ASWebAuthenticationSession`; scopes `drive.file openid email`; tokens in Keychain service `"ArgusAI-GoogleDrive"`; `uploadFile(name:data:mimeType:folderID:)` via multipart Drive API v3; `folderID(from:)` parses folder URL/ID; credentials in gitignored `GoogleCredentials.swift` (copy from `.example`) |
 | **Daily Cost chart** | `OverviewDailyCostChart` in `OverviewView` (golden area+line); also in `PlatformView` as bar chart with adaptive aggregation |
 | **Multi-account tracking** | `account_timeline` table + `messages.account_uuid`; `readCurrentAccount()` in `MetricsStore`; account chip in sidebar |
 | **Account filter** | `MetricsStore.accountFilter` → `ArgusDB.accountFilter` → SQL `AND account_uuid = '...'` on all queries; sidebar picker (hidden if single account) |
@@ -190,7 +217,15 @@ Key per-day structures stored in `StatsCache`:
 | **Cost per Hour** | `queryDailyHourCosts()` → `dailyHourCosts` → `filteredHourlyCosts`; gold bar chart "Cost per Hour of Day" in `ScheduleView` |
 | **Chart tooltips** | `chartXSelection` + overlay on `ActivityBarChart` (date → msg count) and `HourlyBarChart` (hour → msg count) |
 | **Sortable Projects table** | `ProjectSortKey` enum + `sorted` computed var in `ProjectTable`; click any column header (PROJECT/MSG/OUTPUT/COST/WEB/% AI) to sort |
-| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar; selecting a date activates `.custom` filter; clicking a preset deactivates it |
+| **Custom date range** | "Da / Al" `DatePicker` rows in sidebar (indented under "Custom" `SidebarFilterRow`); selecting a date activates `.custom` filter; clicking a preset deactivates it |
+| **Chart crosshair** | `ChartCrosshair` helper in `Components.swift` — vertical + horizontal dashed lines, intersection dot, floating tooltip; applied to all line charts (Daily Messages, Daily Cost, Daily Cost Trend, Output/Context Ratio, Token Trend) |
+| **Click-to-explain** | `DailyCostExplainView` popover in `OverviewView.swift`; clicking the Daily Cost chart opens a breakdown by model + project, raw SQL, copy button |
+| **Session detail view** | Click any row in Sessions tab → `SessionDetailView` sheet; per-message breakdown (time, model, all token types, cost, ai_lines); footer row with session totals; data from `ArgusDB.querySessionMessages(sessionId:)` |
+| **Settings window** | `SettingsView.swift` — Cmd+,; three tabs: General (color scheme System/Dark/Light via `@AppStorage("argusai.colorScheme")`), Alerts (global daily + per-project monthly thresholds), Pricing (built-in price table + external file `~/.claude/argus_pricing.json` status + estimate disclaimer) |
+| **Per-project monthly alerts** | `store.projectAlertThresholds: [String: Double]` (UserDefaults JSON); `checkAlerts()` fires once per month per project when spend ≥ limit; key pattern `argusai.projectAlert.<project>.<yyyy-MM>` |
+| **External pricing override** | `~/.claude/argus_pricing.json` — JSON object `{ "model-id": { inputPerMTok, outputPerMTok, cacheReadPerMTok, cacheWritePerMTok } }`; loaded once at startup into `ModelPricingTable.externalOverrides`; restart app to apply |
+| **Dark/Light mode** | Colors in `Theme.swift` use `NSColor(name:dynamicProvider:)` to adapt to system appearance; user can force dark/light via Settings → General; `ContentView` applies `.preferredColorScheme()` from `@AppStorage("argusai.colorScheme")` |
+| **Onboarding** | `OnboardingView` shown when `store.stats == nil && !store.isLoading` — 3-step numbered guide to get started with Claude Code |
 
 ### Platform tab — Cost per User
 Uses `filteredAccountCosts: [AccountCostBreakdown]` computed from `DailyAccountCosts` (per-day, per-account cost + message counts). This ensures the "Today" filter shows only today's cost, not the all-time total. `AccountCostBreakdown` carries both `costUSD` and `messageCount`.
@@ -221,3 +256,25 @@ Silent refresh never shows the loading spinner; only the very first load does.
 
 `ModelPricingTable` in `Models.swift` maps model IDs to per-MTok prices.  
 Use `ModelPricingTable.price(for: model).cost(input:output:cr:cc:)` for cost computation.
+
+`externalOverrides` is loaded once at startup from `~/.claude/argus_pricing.json` (if present). Format:
+```json
+{ "claude-sonnet-4-6": { "inputPerMTok": 3.0, "outputPerMTok": 15.0, "cacheReadPerMTok": 0.30, "cacheWritePerMTok": 3.75 } }
+```
+
+**Note on accuracy**: JSONL files have no `costUSD` field — all costs are estimates from the price table. Actual billing can differ by ~10–15% (billing cycle mismatch, plan-specific rates, cache tier pricing). The Pricing tab in Settings shows this disclaimer to users.
+
+## Plain buttons on macOS
+
+With `.buttonStyle(.plain)`, SwiftUI only hits the text content — not empty space. **Always add `.contentShape(Rectangle())`** to the label view of any plain-style button that must be tappable across its full area (rows, nav items, filter rows).
+
+## Color scheme
+
+`Theme.swift` uses `NSColor(name:dynamicProvider:)` for all semantic colors. To add a new adaptive color:
+```swift
+static let appMyColor = Color(NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? NSColor(srgbRed: 0.1, green: 0.1, blue: 0.1, alpha: 1)  // dark
+        : NSColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1)  // light
+})
+```
