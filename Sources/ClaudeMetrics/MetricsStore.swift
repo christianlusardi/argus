@@ -714,6 +714,78 @@ class MetricsStore: ObservableObject {
         filteredDailyTotals.map { (date: $0.date, cost: $0.estimatedCostUSD) }
     }
 
+    // MARK: - Daily cost explanation (for chart click-to-explain popover)
+
+    struct DailyCostExplanation {
+        struct ModelLine: Identifiable {
+            var id: String { model }
+            let model: String
+            let displayName: String
+            let inputTokens: Int
+            let outputTokens: Int
+            let cacheReadTokens: Int
+            let cacheCreateTokens: Int
+            let price: ModelPricingTable.Price
+            let costInput: Double
+            let costOutput: Double
+            let costCacheRead: Double
+            let costCacheCreate: Double
+            var costTotal: Double { costInput + costOutput + costCacheRead + costCacheCreate }
+        }
+        struct ProjectLine: Identifiable {
+            var id: String { project }
+            let project: String
+            let costUSD: Double
+            let messageCount: Int
+        }
+        let date: String
+        let totalCost: Double
+        let totalMessages: Int
+        let modelLines: [ModelLine]
+        let projectLines: [ProjectLine]
+        let accountFilter: String?
+        let projectFilter: String?
+    }
+
+    func dailyCostExplanation(for date: String) -> DailyCostExplanation? {
+        guard let totals = stats?.dailyTotals?.first(where: { $0.date == date }) else { return nil }
+        let breakdown = stats?.dailyModelBreakdown?.first(where: { $0.date == date })
+        let modelLines: [DailyCostExplanation.ModelLine] = (breakdown?.modelTokens ?? [:])
+            .sorted { ($0.value.outputTokens + $0.value.inputTokens) > ($1.value.outputTokens + $1.value.inputTokens) }
+            .map { (model, s) in
+                let p = ModelPricingTable.price(for: model)
+                return .init(
+                    model: model,
+                    displayName: modelDisplayName(model),
+                    inputTokens: s.inputTokens,
+                    outputTokens: s.outputTokens,
+                    cacheReadTokens: s.cacheReadInputTokens,
+                    cacheCreateTokens: s.cacheCreationInputTokens,
+                    price: p,
+                    costInput:       Double(s.inputTokens)              * p.inputPerMTok     / 1_000_000,
+                    costOutput:      Double(s.outputTokens)             * p.outputPerMTok    / 1_000_000,
+                    costCacheRead:   Double(s.cacheReadInputTokens)     * p.cacheReadPerMTok / 1_000_000,
+                    costCacheCreate: Double(s.cacheCreationInputTokens) * p.cacheWritePerMTok / 1_000_000
+                )
+            }
+        let projectDay = stats?.dailyProjectCosts?.first(where: { $0.date == date })
+        let projectLines: [DailyCostExplanation.ProjectLine] = (projectDay?.costs ?? [:])
+            .sorted { $0.value > $1.value }
+            .map { (proj, cost) in
+                .init(project: proj, costUSD: cost, messageCount: projectDay?.messages[proj] ?? 0)
+            }
+        let totalMessages = (projectDay?.messages ?? [:]).values.reduce(0, +)
+        return .init(
+            date: date,
+            totalCost: totals.estimatedCostUSD,
+            totalMessages: totalMessages,
+            modelLines: modelLines,
+            projectLines: projectLines,
+            accountFilter: accountFilter,
+            projectFilter: projectFilter
+        )
+    }
+
     // MARK: - Filtered model stats
 
     private var filteredModelBreakdownDays: [DailyModelBreakdown] {

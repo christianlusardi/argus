@@ -3,6 +3,7 @@ import Charts
 
 struct PlatformView: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedPeriod: String? = nil
 
     var body: some View {
         ScrollView {
@@ -99,6 +100,7 @@ struct PlatformView: View {
                             "Output": Color.modelSonnet
                         ])
                         .chartLegend(position: .topLeading)
+                        .chartXSelection(value: $selectedPeriod)
                         .chartXAxis {
                             AxisMarks {
                                 AxisValueLabel()
@@ -111,6 +113,44 @@ struct PlatformView: View {
                                 AxisValueLabel()
                                     .foregroundStyle(Color.appTextTertiary)
                                     .font(.system(size: 9))
+                            }
+                        }
+                        .chartOverlay { proxy in
+                            GeometryReader { geo in
+                                if let sel = selectedPeriod,
+                                   let pt = store.platformChartData.first(where: { $0.label == sel }),
+                                   let plotAnchor = proxy.plotFrame {
+                                    let plotRect = geo[plotAnchor]
+                                    let xPos = (proxy.position(forX: pt.label) ?? 0) + plotRect.minX
+                                    let yInPos  = (proxy.position(forY: pt.inputTokens)  ?? 0) + plotRect.minY
+                                    let yOutPos = (proxy.position(forY: pt.outputTokens) ?? 0) + plotRect.minY
+                                    let yTopPos = min(yInPos, yOutPos)
+
+                                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yInPos)
+                                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yOutPos)
+                                    ChartCrosshair.point(xPos: xPos, yPos: yInPos,  color: Color.appAccent)
+                                    ChartCrosshair.point(xPos: xPos, yPos: yOutPos, color: Color.modelSonnet)
+                                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yTopPos) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(pt.label)
+                                                .font(.system(size: 10, weight: .semibold))
+                                                .foregroundStyle(Color.appTextPrimary)
+                                            HStack(spacing: 5) {
+                                                Circle().fill(Color.appAccent).frame(width: 6, height: 6)
+                                                Text("In  \(formatTokens(pt.inputTokens))")
+                                                    .font(.system(size: 10, design: .monospaced))
+                                                    .foregroundStyle(Color.appAccent)
+                                            }
+                                            HStack(spacing: 5) {
+                                                Circle().fill(Color.modelSonnet).frame(width: 6, height: 6)
+                                                Text("Out \(formatTokens(pt.outputTokens))")
+                                                    .font(.system(size: 10, design: .monospaced))
+                                                    .foregroundStyle(Color.modelSonnet)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         .frame(height: 180)
