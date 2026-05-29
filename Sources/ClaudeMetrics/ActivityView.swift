@@ -188,10 +188,30 @@ struct ToolCallChart: View {
 
 struct EfficiencyTrendChart: View {
     @EnvironmentObject var store: MetricsStore
+    @State private var selectedDate: Date? = nil
 
     private let fmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
     }()
+
+    private let tooltipFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "MMM d"; return f
+    }()
+
+    private struct RatioPoint { let date: Date; let ratio: Double }
+
+    private var points: [RatioPoint] {
+        store.filteredEfficiencyTrend.compactMap {
+            guard let d = fmt.date(from: $0.date) else { return nil }
+            return RatioPoint(date: d, ratio: $0.ratio)
+        }
+    }
+
+    private func closestPoint(to date: Date) -> RatioPoint? {
+        points.min(by: {
+            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+        })
+    }
 
     var body: some View {
         Chart(store.filteredEfficiencyTrend, id: \.date) { item in
@@ -203,6 +223,7 @@ struct EfficiencyTrendChart: View {
                 .foregroundStyle(Color.modelSonnet.opacity(0.15))
                 .interpolationMethod(.catmullRom)
         }
+        .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(Color.appBorder)
@@ -222,6 +243,31 @@ struct EfficiencyTrendChart: View {
             }
         }
         .chartPlotStyle { $0.background(Color.clear) }
+        .chartOverlay { proxy in
+            GeometryReader { geo in
+                if let sel = selectedDate,
+                   let p = closestPoint(to: sel),
+                   let plotAnchor = proxy.plotFrame {
+                    let plotRect = geo[plotAnchor]
+                    let xPos = (proxy.position(forX: p.date) ?? 0) + plotRect.minX
+                    let yPos = (proxy.position(forY: p.ratio) ?? 0) + plotRect.minY
+
+                    ChartCrosshair.verticalLine(plotRect: plotRect, xPos: xPos)
+                    ChartCrosshair.horizontalLine(plotRect: plotRect, yPos: yPos)
+                    ChartCrosshair.point(xPos: xPos, yPos: yPos, color: Color.modelSonnet)
+                    ChartCrosshair.tooltip(plotRect: plotRect, xPos: xPos, yPos: yPos) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(tooltipFmt.string(from: p.date))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.appTextPrimary)
+                            Text(String(format: "%.2f", p.ratio))
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(Color.modelSonnet)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
